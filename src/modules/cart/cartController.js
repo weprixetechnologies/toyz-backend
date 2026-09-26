@@ -1,0 +1,214 @@
+const { query } = require('../../config/db');
+const { v4: uuidv4 } = require('uuid');
+const { evaluateOffers } = require('../../utils/offerEngine');
+const { resolvePrice } = require('../../utils/priceResolver');
+
+async function getOrCreateCart(req) {
+  let cart = null;
+  const userId = req.user?.id;
+  const guestToken = req.guest_token || req.headers['x-guest-token'] || req.body?.guest_token || req.query?.guest_token;
+
+  if (userId) {
+    const carts = await query('SELECT * FROM carts WHERE user_id = ?', [userId]);
+    if (carts.length > 0) {
+      cart = carts[0];
+    } else {
+      const res = await query('INSERT INTO carts (user_id) VALUES (?)', [userId]);
+      cart = { id: res.insertId, user_id: userId };
+    }
+  } else if (guestToken) {
+    const carts = await query('SELECT * FROM carts WHERE guest_token = ?', [guestToken]);
+    if (carts.length > 0) {
+      cart = carts[0];
+    } else {
+      const res = await query('INSERT INTO carts (guest_token) VALUES (?)', [guestToken]);
+      cart = { id: res.insertId, guest_token: guestToken };
+    }
+  } else {
+    const newGuestToken = uuidv4();
+    const res = await query('INSERT INTO carts (guest_token) VALUES (?)', [newGuestToken]);
+    cart = { id: res.insertId, guest_token: newGuestToken };
+    req.guest_token = newGuestToken; // Save to req for chained function calls
+  }
+
+  return cart;
+}
+
+async function getCart(req, res, next) {
+  try {
+    const cart = await getOrCreateCart(req);
+    const couponCode = req.query?.coupon_code || req.body?.coupon_code || cart.applied_coupon_code || null;
+
+    const items = await query(
+      `SELECT ci.*, p.name as product_name, p.slug as product_slug, p.base_price, p.sale_price,
+              (SELECT url FROM product_images WHERE product_id = p.id ORDER BY is_primary DESC, sort_order ASC LIMIT 1) as image,
+              pv.sku as variant_sku, pv.price as variant_price, pv.sale_price as variant_sale_price
+       FROM cart_items ci
+       JOIN products p ON ci.product_id = p.id
+       LEFT JOIN product_variants pv ON ci.variant_id = pv.id
+       WHERE ci.cart_id = ?`,
+      [cart.id]
+    );
+
+    let subtotal = 0;
+    const formattedItems = [];
+    for (const item of items) {
+      const product = { id: item.product_id, base_price: item.base_price, sale_price: item.sale_price };
+      const variant = item.variant_id
+        ? { id: item.variant_id, price: item.variant_price, sale_price: item.variant_sale_price }
+        : null;
+      const priceInfo = await resolvePrice({ user: req.user || null, product, variant, qty: item.qty });
+      const unitPrice = priceInfo.unit_price;
+      const lineTotal = unitPrice * item.qty;
+      subtotal += lineTotal;
+      formattedItems.push({
+        ...item,
+        unit_price: unitPrice,
+        original_price: priceInfo.original_price,
+        discount_applied: priceInfo.discount_applied,
+        price_source: priceInfo.source,
+        line_total: lineTotal
+      });
+    }
+
+    const offerEval = await evaluateOffers({
+      subtotal,
+      cartItems: formattedItems,
+      userRole: req.user?.role || 'customer',
+      couponCode,
+      userId: req.user?.id || null
+    });
+
+    const [shippingSetting] = await query("SELECT setting_value FROM settings WHERE setting_key = 'shipping_cost_default'");
+    const shippingCost = items.length > 0 ? parseFloat(shippingSetting[0]?.setting_value || '50.00') : 0;
+    const grandTotal = Math.max(0, offerEval.final_subtotal + shippingCost);
+
+    res.json({
+      success: true,
+      data: {
+        cart_id: cart.id,
+        guest_token: cart.guest_token || null,
+        items: formattedItems,
+        summary: {
+          subtotal,
+          offer_discount: offerEval.offer_discount,
+          coupon_discount: offerEval.coupon_discount,
+          total_discount: offerEval.total_discount,
+          shipping: shippingCost,
+          grand_total: grandTotal,
+          applied_offers: offerEval.applied_offers,
+          applied_coupon: offerEval.applied_coupon
+        }
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function addItem(req, res, next) {
+  try {
+    const { product_id, variant_id } = req.body;
+    const rawQty = req.body.qty ?? req.body.quantity ?? 1;
+    const qty = parseInt(rawQty, 10);
+
+    if (!product_id) {
+      return res.status(400).json({ success: false, message: 'Product ID is required' });
+    }
+
+    const cart = await getOrCreateCart(req);
+
+    const existing = await query(
+      'SELECT id, qty FROM cart_items WHERE cart_id = ? AND product_id = ? AND (variant_id = ? OR (variant_id IS NULL AND ? IS NULL))',
+      [cart.id, product_id, variant_id || null, variant_id || null]
+    );
+
+    if (existing.length > 0) {
+      const newQty = existing[0].qty + qty;
+      await query('UPDATE cart_items SET qty = ? WHERE id = ?', [newQty, existing[0].id]);
+    } else {
+      await query(
+        'INSERT INTO cart_items (cart_id, product_id, variant_id, qty) VALUES (?, ?, ?, ?)',
+        [cart.id, product_id, variant_id || null, qty]
+      );
+    }
+
+    return getCart(req, res, next);
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function updateItem(req, res, next) {
+  try {
+    const { id } = req.params;
+    const rawQty = req.body.qty ?? req.body.quantity;
+    const qty = parseInt(rawQty, 10);
+
+    if (isNaN(qty) || qty < 1) {
+      return res.status(400).json({ success: false, message: 'Valid quantity required' });
+    }
+
+    const cart = await getOrCreateCart(req);
+    await query('UPDATE cart_items SET qty = ? WHERE id = ? AND cart_id = ?', [qty, id, cart.id]);
+
+    return getCart(req, res, next);
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function removeItem(req, res, next) {
+  try {
+    const { id } = req.params;
+    const cart = await getOrCreateCart(req);
+    await query('DELETE FROM cart_items WHERE id = ? AND cart_id = ?', [id, cart.id]);
+
+    return getCart(req, res, next);
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function clearCart(req, res, next) {
+  try {
+    const cart = await getOrCreateCart(req);
+    await query('DELETE FROM cart_items WHERE cart_id = ?', [cart.id]);
+
+    res.json({ success: true, message: 'Cart cleared' });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function applyCoupon(req, res, next) {
+  try {
+    const { code } = req.body;
+    if (!code) {
+      return res.status(400).json({ success: false, message: 'Coupon code required' });
+    }
+    req.body.coupon_code = code;
+    return getCart(req, res, next);
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function removeCoupon(req, res, next) {
+  try {
+    req.body.coupon_code = null;
+    return getCart(req, res, next);
+  } catch (error) {
+    next(error);
+  }
+}
+
+module.exports = {
+  getCart,
+  addItem,
+  updateItem,
+  removeItem,
+  clearCart,
+  applyCoupon,
+  removeCoupon
+};
