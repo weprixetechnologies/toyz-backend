@@ -2,7 +2,7 @@ const { query } = require('../../config/db');
 
 async function getPublicSettings(req, res, next) {
   try {
-    const settings = await query("SELECT setting_key, setting_value FROM settings WHERE setting_group IN ('general', 'payment', 'shipping')");
+    const settings = await query("SELECT setting_key, setting_value FROM settings WHERE setting_group IN ('general', 'payment', 'shipping', 'search')");
     const formatted = {};
     settings.forEach((s) => {
       formatted[s.setting_key] = s.setting_value;

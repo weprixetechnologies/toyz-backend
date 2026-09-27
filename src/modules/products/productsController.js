@@ -1,10 +1,22 @@
 const { query } = require('../../config/db');
 const StorageService = require('../../utils/bunnyUpload');
 const { resolvePrice } = require('../../utils/priceResolver');
+const redisClient = require('../../config/redis');
 
 async function listProducts(req, res, next) {
   try {
     const { category_id, brand_id, is_featured, search, min_price, max_price, in_stock, min_rating, sort = 'created_at_desc', page = 1, limit = 20 } = req.query;
+
+    const cacheKey = `products_list:${category_id || ''}:${brand_id || ''}:${is_featured || ''}:${search || ''}:${min_price || ''}:${max_price || ''}:${in_stock || ''}:${min_rating || ''}:${sort}:${page}:${limit}:role_${req.user?.role || 'guest'}`;
+    const cachedData = await redisClient.get(cacheKey);
+    if (cachedData) {
+      console.log(`[Cache] HIT - Served from Redis: ${cacheKey}`);
+      const parsedData = JSON.parse(cachedData);
+      parsedData.meta = { cached: true };
+      return res.json(parsedData);
+    }
+
+    console.log(`[Cache] MISS - Fetching from Database: ${cacheKey}`);
     const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
 
     let whereClause = 'WHERE p.deleted_at IS NULL AND p.is_active = 1';
@@ -134,8 +146,9 @@ async function listProducts(req, res, next) {
       }
     }
 
-    res.json({
+    const responseObj = {
       success: true,
+      meta: { cached: false },
       data: {
         products,
         pagination: {
@@ -145,7 +158,21 @@ async function listProducts(req, res, next) {
           pages: Math.ceil(total / limit)
         }
       }
-    });
+    };
+
+    let ttl = 300;
+    try {
+      const settingRows = await query('SELECT setting_value FROM settings WHERE setting_key = ?', ['cache_ttl_products']);
+      if (settingRows && settingRows.length > 0 && settingRows[0].setting_value) {
+        ttl = parseInt(settingRows[0].setting_value, 10) || 300;
+      }
+    } catch (e) {
+      // fallback to default
+    }
+
+    await redisClient.setex(cacheKey, ttl, JSON.stringify(responseObj));
+
+    res.json(responseObj);
   } catch (error) {
     next(error);
   }

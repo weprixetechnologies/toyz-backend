@@ -203,6 +203,58 @@ async function removeCoupon(req, res, next) {
   }
 }
 
+async function mergeCart(req, res, next) {
+  try {
+    const { guestToken } = req.body;
+    if (!req.user || !guestToken) {
+      return res.status(400).json({ success: false, message: 'User must be logged in and guestToken provided' });
+    }
+
+    const userId = req.user.id;
+
+    // Get or create user cart
+    let userCarts = await query('SELECT id FROM carts WHERE user_id = ?', [userId]);
+    let userCartId;
+    if (userCarts.length === 0) {
+      const inserted = await query('INSERT INTO carts (user_id) VALUES (?)', [userId]);
+      userCartId = inserted.insertId;
+    } else {
+      userCartId = userCarts[0].id;
+    }
+
+    // Get guest cart
+    const guestCarts = await query('SELECT id FROM carts WHERE guest_token = ?', [guestToken]);
+    if (guestCarts.length > 0) {
+      const guestCartId = guestCarts[0].id;
+      
+      const guestItems = await query('SELECT * FROM cart_items WHERE cart_id = ?', [guestCartId]);
+      const userItems = await query('SELECT * FROM cart_items WHERE cart_id = ?', [userCartId]);
+
+      for (const gItem of guestItems) {
+        const matchingUItem = userItems.find(
+          u => u.product_id === gItem.product_id && (u.variant_id === gItem.variant_id || (!u.variant_id && !gItem.variant_id))
+        );
+
+        if (matchingUItem) {
+          const newQty = Math.max(matchingUItem.qty, gItem.qty);
+          await query('UPDATE cart_items SET qty = ? WHERE id = ?', [newQty, matchingUItem.id]);
+          await query('DELETE FROM cart_items WHERE id = ?', [gItem.id]);
+        } else {
+          await query('UPDATE cart_items SET cart_id = ? WHERE id = ?', [userCartId, gItem.id]);
+        }
+      }
+
+      await query('DELETE FROM carts WHERE id = ?', [guestCartId]);
+    }
+
+    // Return merged cart
+    req.query = { ...req.query, guest_token: null }; // Ensure we fetch user cart
+    return getCart(req, res, next);
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   getCart,
   addItem,
@@ -210,5 +262,6 @@ module.exports = {
   removeItem,
   clearCart,
   applyCoupon,
-  removeCoupon
+  removeCoupon,
+  mergeCart
 };

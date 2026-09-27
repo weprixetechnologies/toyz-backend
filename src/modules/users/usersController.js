@@ -170,10 +170,10 @@ async function getOwnProfile(req, res, next) {
 
 async function updateOwnProfile(req, res, next) {
   try {
-    const { name, phone, gstin, avatar, cover_image } = req.body;
+    const { name, phone, gstin, avatar } = req.body;
     await query(
-      `UPDATE users SET name = COALESCE(?, name), phone = COALESCE(?, phone), gstin = COALESCE(?, gstin), avatar = COALESCE(?, avatar), cover_image = COALESCE(?, cover_image) WHERE id = ?`,
-      [name, phone, gstin, avatar, cover_image, req.user.id]
+      `UPDATE users SET name = COALESCE(?, name), phone = COALESCE(?, phone), gstin = COALESCE(?, gstin), avatar = COALESCE(?, avatar) WHERE id = ?`,
+      [name, phone, gstin, avatar, req.user.id]
     );
     res.json({ success: true, message: 'Profile updated successfully' });
   } catch (error) {

@@ -31,6 +31,7 @@ const sectionTagsRoutes = require('./modules/sectionTags/sectionTagsRoutes');
 
 const storageRoutes = require('./modules/storage/storageRoutes');
 const badgesRoutes = require('./modules/badges/badgesRoutes');
+const cacheRoutes = require('./modules/cache/cacheRoutes');
 
 const app = express();
 
@@ -105,6 +106,7 @@ app.use('/api/v1/section-tags', sectionTagsRoutes);
 
 app.use('/api/v1/storage', storageRoutes);
 app.use('/api/v1/badges', badgesRoutes);
+app.use('/api/v1/cache', cacheRoutes);
 
 // Health Check & Sitemap Routes
 const seoController = require('./modules/seo/seoController');

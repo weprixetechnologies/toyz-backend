@@ -13,4 +13,7 @@ router.delete('/', optionalAuth, cartController.clearCart);
 router.post('/coupon', optionalAuth, cartController.applyCoupon);
 router.delete('/coupon', optionalAuth, cartController.removeCoupon);
 
+// Merge cart endpoint
+router.post('/merge', optionalAuth, cartController.mergeCart);
+
 module.exports = router;
