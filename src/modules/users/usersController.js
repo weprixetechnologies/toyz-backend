@@ -129,10 +129,26 @@ async function updateUser(req, res, next) {
     const { id } = req.params;
     const { name, email, phone, role, status, gstin } = req.body;
 
+    const [user] = await query('SELECT role FROM users WHERE id = ?', [id]);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
     await query(
       `UPDATE users SET name = COALESCE(?, name), email = COALESCE(?, email), phone = COALESCE(?, phone), role = COALESCE(?, role), status = COALESCE(?, status), gstin = COALESCE(?, gstin) WHERE id = ? AND deleted_at IS NULL`,
       [name, email, phone, role, status, gstin, id]
     );
+
+    // If role changed to retailer, ensure a reseller profile exists
+    if (role && role === 'retailer' && user.role !== 'retailer') {
+      const existing = await query('SELECT id FROM reseller_profiles WHERE user_id = ?', [id]);
+      if (existing.length === 0) {
+        await query(
+          `INSERT INTO reseller_profiles (user_id, status, business_name, approved_at) VALUES (?, 'approved', ?, NOW())`,
+          [id, name || '']
+        );
+      } else {
+        await query(`UPDATE reseller_profiles SET status = 'approved' WHERE user_id = ?`, [id]);
+      }
+    }
 
     res.json({ success: true, message: 'User updated successfully' });
   } catch (error) {

@@ -84,7 +84,8 @@ async function createBadge(req, res, next) {
       icon = null,
       description = null,
       is_active = 1,
-      product_ids = []
+      product_ids = [],
+      override_others = false
     } = req.body;
 
     if (!name || !badge_text) {
@@ -101,6 +102,9 @@ async function createBadge(req, res, next) {
 
     if (Array.isArray(product_ids) && product_ids.length > 0) {
       for (const pid of product_ids) {
+        if (override_others) {
+          await query('DELETE FROM product_badges WHERE product_id = ?', [pid]);
+        }
         await query('INSERT IGNORE INTO product_badges (product_id, badge_id) VALUES (?, ?)', [pid, badgeId]);
       }
     }
@@ -126,7 +130,8 @@ async function updateBadge(req, res, next) {
       icon,
       description,
       is_active,
-      product_ids
+      product_ids,
+      override_others = false
     } = req.body;
 
     const existing = await query('SELECT * FROM badges WHERE id = ?', [id]);
@@ -159,6 +164,9 @@ async function updateBadge(req, res, next) {
     if (Array.isArray(product_ids)) {
       await query('DELETE FROM product_badges WHERE badge_id = ?', [id]);
       for (const pid of product_ids) {
+        if (override_others) {
+          await query('DELETE FROM product_badges WHERE product_id = ?', [pid]);
+        }
         await query('INSERT IGNORE INTO product_badges (product_id, badge_id) VALUES (?, ?)', [pid, id]);
       }
     }
@@ -185,7 +193,7 @@ async function deleteBadge(req, res, next) {
 async function assignBadgeProducts(req, res, next) {
   try {
     const { id } = req.params;
-    const { product_ids = [] } = req.body;
+    const { product_ids = [], override_others = false } = req.body;
 
     if (!Array.isArray(product_ids)) {
       return res.status(400).json({ success: false, message: 'product_ids must be an array' });
@@ -194,6 +202,9 @@ async function assignBadgeProducts(req, res, next) {
     await query('DELETE FROM product_badges WHERE badge_id = ?', [id]);
 
     for (const pid of product_ids) {
+      if (override_others) {
+        await query('DELETE FROM product_badges WHERE product_id = ?', [pid]);
+      }
       await query('INSERT IGNORE INTO product_badges (product_id, badge_id) VALUES (?, ?)', [pid, id]);
     }
 
