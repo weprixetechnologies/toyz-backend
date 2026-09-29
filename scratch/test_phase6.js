@@ -1,7 +1,7 @@
 const http = require('http');
 const db = require('../src/config/db');
 
-const BASE_URL = 'http://localhost:46711/api/v1';
+const BASE_URL = 'http://72.60.219.181:46711/api/v1';
 
 function request(path, options = {}) {
   return new Promise((resolve, reject) => {
@@ -364,7 +364,7 @@ async function runTests() {
     // ----------------------------------------------------
     console.log('\n--- TEST GROUP 12: SITEMAP XML VALIDITY AUDIT ---');
 
-    const sitemap = await request('http://localhost:46711/sitemap.xml');
+    const sitemap = await request('http://72.60.219.181:46711/sitemap.xml');
     assert(sitemap.status === 200 && typeof sitemap.body === 'string' && sitemap.body.includes('<urlset'), 'SEO Audit: /sitemap.xml returns valid XML sitemap structure');
 
   } catch (err) {
