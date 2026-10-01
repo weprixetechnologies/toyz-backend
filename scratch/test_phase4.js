@@ -1,6 +1,6 @@
 const http = require('http');
 
-const BASE_URL = 'http://72.60.219.181:46711/api/v1';
+const BASE_URL = 'https://backend.provokeplaytech.com/api/v1';
 
 function request(path, options = {}) {
   return new Promise((resolve, reject) => {
