@@ -1,13 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const shippingController = require('./shippingController');
-const { authMiddleware } = require('../../middleware/auth');
+const { authMiddleware, optionalAuth } = require('../../middleware/auth');
 const roleGuard = require('../../middleware/roleGuard');
 const adminGuard = roleGuard('admin', 'superadmin');
 
 // Public/Customer shipping options
-router.get('/options', shippingController.getShippingOptions);
-router.get('/shipping/options', shippingController.getShippingOptions);
+router.get('/options', optionalAuth, shippingController.getShippingOptions);
+router.get('/shipping/options', optionalAuth, shippingController.getShippingOptions);
+router.get('/cart/shipping-options', optionalAuth, shippingController.getShippingOptions);
 
 // Customer order shipments lookup
 router.get('/orders/:id/shipments', authMiddleware, shippingController.getOrderShipments);

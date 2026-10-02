@@ -6,7 +6,11 @@ class ShippingController {
    */
   async getShippingOptions(req, res, next) {
     try {
-      const presets = await shippingService.getActivePresets();
+      const presets = await shippingService.getShippingOptions({
+        pinCode: req.query.pin_code || req.query.pincode || null,
+        subtotal: req.query.subtotal || 0,
+        userRole: req.user?.role || 'customer'
+      });
       res.json({
         success: true,
         data: presets,

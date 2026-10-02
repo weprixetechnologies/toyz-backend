@@ -77,6 +77,45 @@ class ShippingService {
     return presets || [];
   }
 
+  async getQuote({ pinCode = null, subtotal = 0, userRole = 'customer' } = {}) {
+    const settings = await db.query(
+      "SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('global_shipping_fee', 'shipping_cost_default', 'shipping_applies_to', 'free_shipping_threshold')"
+    );
+    const values = Object.fromEntries(settings.map(row => [row.setting_key, row.setting_value]));
+    const appliesTo = values.shipping_applies_to || 'customer_only';
+    const fallbackCost = parseFloat(values.global_shipping_fee ?? values.shipping_cost_default ?? '50') || 0;
+    const freeThreshold = parseFloat(values.free_shipping_threshold || '0') || 0;
+
+    if (userRole === 'retailer' && appliesTo === 'customer_only') {
+      return { id: 'retailer-free', label: 'Retailer Shipping', cost: 0, estimated_days: 'To be confirmed', source: 'retailer_scope' };
+    }
+    if (freeThreshold > 0 && parseFloat(subtotal || 0) >= freeThreshold) {
+      return { id: 'free-threshold', label: 'Free Shipping', cost: 0, estimated_days: 'Standard delivery', source: 'free_threshold' };
+    }
+
+    if (pinCode) {
+      const presets = await db.query(
+        'SELECT * FROM shipping_presets WHERE label = ? AND is_active = 1 ORDER BY sort_order ASC, id ASC LIMIT 1',
+        [String(pinCode).trim()]
+      );
+      if (presets.length > 0) return { ...presets[0], source: 'pincode' };
+    }
+
+    return {
+      id: 'fallback',
+      label: 'Standard Shipping',
+      cost: fallbackCost,
+      estimated_days: 'Standard delivery',
+      source: 'fallback'
+    };
+  }
+
+  async getShippingOptions({ pinCode = null, subtotal = 0, userRole = 'customer' } = {}) {
+    if (pinCode) return [await this.getQuote({ pinCode, subtotal, userRole })];
+    const presets = await this.getActivePresets();
+    return presets.length > 0 ? presets : [await this.getQuote({ subtotal, userRole })];
+  }
+
   /**
    * Admin: List all presets
    */

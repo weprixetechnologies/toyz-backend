@@ -202,17 +202,17 @@ async function placeOrder(req, res, next) {
 
     // Shipping cost lookup
     let shippingCost = 0;
-    if (isRetailer) {
-      shippingCost = 0;
-    } else {
-      const pinCode = address.pin_code;
+    const [shippingSettings] = await connection.query(
+      "SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('global_shipping_fee', 'shipping_cost_default', 'shipping_applies_to', 'free_shipping_threshold')"
+    );
+    const shippingValues = Object.fromEntries(shippingSettings.map(row => [row.setting_key, row.setting_value]));
+    const shippingScope = shippingValues.shipping_applies_to || 'customer_only';
+    const fallbackShipping = parseFloat(shippingValues.global_shipping_fee ?? shippingValues.shipping_cost_default ?? '50') || 0;
+    const freeShippingThreshold = parseFloat(shippingValues.free_shipping_threshold || '0') || 0;
+    if (!(isRetailer && shippingScope === 'customer_only') && !(freeShippingThreshold > 0 && finalSubtotal >= freeShippingThreshold)) {
+      const pinCode = String(address.pin_code).trim();
       const [presetRes] = await connection.query('SELECT cost FROM shipping_presets WHERE label = ? AND is_active = 1 LIMIT 1', [pinCode]);
-      if (presetRes.length > 0) {
-        shippingCost = parseFloat(presetRes[0].cost);
-      } else {
-        const [shippingSetting] = await connection.query("SELECT setting_value FROM settings WHERE setting_key = 'global_shipping_fee'");
-        shippingCost = parseFloat(shippingSetting[0]?.setting_value || '50.00');
-      }
+      shippingCost = presetRes.length > 0 ? parseFloat(presetRes[0].cost) : fallbackShipping;
     }
 
     const grandTotal = finalSubtotal + shippingCost;

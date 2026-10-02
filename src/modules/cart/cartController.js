@@ -2,6 +2,7 @@ const { query } = require('../../config/db');
 const { v4: uuidv4 } = require('uuid');
 const { evaluateOffers } = require('../../utils/offerEngine');
 const { resolvePrice } = require('../../utils/priceResolver');
+const shippingService = require('../shipping/shippingService');
 
 async function getOrCreateCart(req) {
   let cart = null;
@@ -85,8 +86,14 @@ async function getCart(req, res, next) {
       selectedOfferIds
     });
 
-    const [shippingSetting] = await query("SELECT setting_value FROM settings WHERE setting_key = 'shipping_cost_default'");
-    const shippingCost = items.length > 0 ? parseFloat(shippingSetting[0]?.setting_value || '50.00') : 0;
+    const quote = items.length > 0
+      ? await shippingService.getQuote({
+          pinCode: req.query?.pin_code || req.body?.pin_code || null,
+          subtotal: offerEval.final_subtotal,
+          userRole: req.user?.role || 'customer'
+        })
+      : { cost: 0, source: 'empty' };
+    const shippingCost = parseFloat(quote.cost || 0);
     const grandTotal = Math.max(0, offerEval.final_subtotal + shippingCost);
 
     res.json({
@@ -101,6 +108,8 @@ async function getCart(req, res, next) {
           coupon_discount: offerEval.coupon_discount,
           total_discount: offerEval.total_discount,
           shipping: shippingCost,
+          shipping_source: quote.source,
+          shipping_label: quote.label,
           grand_total: grandTotal,
           applied_offers: offerEval.applied_offers,
           applied_coupon: offerEval.applied_coupon,
