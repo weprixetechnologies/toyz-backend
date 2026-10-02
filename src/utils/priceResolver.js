@@ -17,6 +17,15 @@ async function getProductMoq(productId, variantId, user = null) {
   return moq;
 }
 
+async function isApprovedRetailer(user) {
+  if (!user || user.role !== 'retailer') return false;
+  const rows = await query(
+    'SELECT id FROM reseller_profiles WHERE user_id = ? AND status = "approved" LIMIT 1',
+    [user.id]
+  );
+  return rows.length > 0;
+}
+
 async function resolvePrice({ user, product, variant, qty = 1 }) {
   const originalPrice = parseFloat(variant ? variant.price : product.base_price);
   const retailSalePrice = parseFloat(variant ? (variant.sale_price || variant.price) : (product.sale_price || product.base_price));
@@ -25,7 +34,8 @@ async function resolvePrice({ user, product, variant, qty = 1 }) {
   let source = retailSalePrice < originalPrice ? 'sale_price' : 'base_price';
   let discountApplied = Math.max(0, originalPrice - retailSalePrice);
 
-  const role = user?.role || 'customer';
+  const retailer = await isApprovedRetailer(user);
+  const role = retailer ? 'retailer' : 'customer';
   const moq = await getProductMoq(product.id, variant?.id, user);
 
   // 1. Bulk Pricing Tier Check
@@ -103,5 +113,6 @@ async function resolvePrice({ user, product, variant, qty = 1 }) {
 
 module.exports = {
   getProductMoq,
-  resolvePrice
+  resolvePrice,
+  isApprovedRetailer
 };

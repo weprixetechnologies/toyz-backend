@@ -38,6 +38,11 @@ async function getCart(req, res, next) {
   try {
     const cart = await getOrCreateCart(req);
     const couponCode = req.query?.coupon_code || req.body?.coupon_code || cart.applied_coupon_code || null;
+    let selectedOfferIds = req.query?.selected_offer_ids || req.body?.selected_offer_ids || [];
+    if (typeof selectedOfferIds === 'string') {
+      try { selectedOfferIds = JSON.parse(selectedOfferIds); } catch (e) { selectedOfferIds = selectedOfferIds.split(',').filter(Boolean); }
+    }
+    if (!Array.isArray(selectedOfferIds)) selectedOfferIds = [];
 
     const items = await query(
       `SELECT ci.*, p.name as product_name, p.slug as product_slug, p.base_price, p.sale_price,
@@ -76,7 +81,8 @@ async function getCart(req, res, next) {
       cartItems: formattedItems,
       userRole: req.user?.role || 'customer',
       couponCode,
-      userId: req.user?.id || null
+      userId: req.user?.id || null,
+      selectedOfferIds
     });
 
     const [shippingSetting] = await query("SELECT setting_value FROM settings WHERE setting_key = 'shipping_cost_default'");
@@ -97,7 +103,10 @@ async function getCart(req, res, next) {
           shipping: shippingCost,
           grand_total: grandTotal,
           applied_offers: offerEval.applied_offers,
-          applied_coupon: offerEval.applied_coupon
+          applied_coupon: offerEval.applied_coupon,
+          available_offers: offerEval.available_offers,
+          rejected_offer_ids: offerEval.rejected_offer_ids,
+          selected_offer_ids: selectedOfferIds
         }
       }
     });
@@ -114,6 +123,20 @@ async function addItem(req, res, next) {
 
     if (!product_id) {
       return res.status(400).json({ success: false, message: 'Product ID is required' });
+    }
+    if (!Number.isInteger(qty) || qty < 1) {
+      return res.status(400).json({ success: false, message: 'Valid quantity required' });
+    }
+
+    const products = await query(
+      `SELECT p.id FROM products p
+       LEFT JOIN product_variants pv ON pv.id = ? AND pv.product_id = p.id AND pv.is_active = 1
+       WHERE p.id = ? AND p.deleted_at IS NULL AND p.is_active = 1
+         AND (? IS NULL OR pv.id IS NOT NULL)`,
+      [variant_id || null, product_id, variant_id || null]
+    );
+    if (products.length === 0) {
+      return res.status(400).json({ success: false, message: 'Product or variant is no longer available' });
     }
 
     const cart = await getOrCreateCart(req);
@@ -187,7 +210,23 @@ async function applyCoupon(req, res, next) {
     if (!code) {
       return res.status(400).json({ success: false, message: 'Coupon code required' });
     }
+    if (req.user?.role === 'retailer') {
+      return res.status(403).json({ success: false, message: 'Retailers cannot apply extra offers or coupons.' });
+    }
     req.body.coupon_code = code;
+    return getCart(req, res, next);
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function applyOffers(req, res, next) {
+  try {
+    if (req.user?.role === 'retailer') {
+      return res.status(403).json({ success: false, message: 'Retailers cannot apply extra offers.' });
+    }
+    const selectedOfferIds = Array.isArray(req.body.selected_offer_ids) ? req.body.selected_offer_ids : [];
+    req.body.selected_offer_ids = selectedOfferIds;
     return getCart(req, res, next);
   } catch (error) {
     next(error);
@@ -262,6 +301,7 @@ module.exports = {
   removeItem,
   clearCart,
   applyCoupon,
+  applyOffers,
   removeCoupon,
   mergeCart
 };

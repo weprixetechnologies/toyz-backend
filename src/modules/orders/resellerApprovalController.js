@@ -35,6 +35,16 @@ async function approveResellerOrder(req, res, next) {
     }
 
     const order = orders[0];
+    if (order.placed_by_role !== 'retailer' || order.status !== 'pending_approval') {
+      connection.release();
+      return res.status(409).json({ success: false, message: 'Only pending retailer orders can be approved.' });
+    }
+    const [allOrderItems] = await connection.query('SELECT * FROM order_items WHERE order_id = ?', [id]);
+    const inputIds = new Set(items.map(item => String(item.id)));
+    if (allOrderItems.some(item => !inputIds.has(String(item.id)))) {
+      connection.release();
+      return res.status(400).json({ success: false, message: 'Approval decisions are required for every order item.' });
+    }
     await connection.beginTransaction();
 
     let approvedCount = 0;
@@ -47,7 +57,11 @@ async function approveResellerOrder(req, res, next) {
 
       const orderItem = orderItems[0];
       const qtyRequested = orderItem.qty_ordered;
-      const qtyApproved = Math.max(0, Math.min(qtyRequested, parseInt(itemInput.qty_approved || 0, 10)));
+      const requestedApproved = parseInt(itemInput.qty_approved, 10);
+      if (!Number.isInteger(requestedApproved) || requestedApproved < 0 || requestedApproved > qtyRequested) {
+        throw Object.assign(new Error(`Invalid approved quantity for '${orderItem.product_name}'`), { statusCode: 400 });
+      }
+      const qtyApproved = requestedApproved;
       const qtyRejected = qtyRequested - qtyApproved;
 
       let itemStatus = 'approved';
@@ -80,6 +94,20 @@ async function approveResellerOrder(req, res, next) {
         [id, orderItem.id, action, qtyRequested, qtyApproved, itemInput.admin_note || null, req.user.id]
       );
 
+      // Stock is reserved at order time. If an admin already edited this line,
+      // only release the newly rejected portion that is still reserved.
+      const previouslyReserved = orderItem.qty_approved !== null && orderItem.qty_approved !== undefined
+        ? parseInt(orderItem.qty_approved, 10)
+        : qtyRequested;
+      const newlyReleasedQty = Math.max(0, previouslyReserved - qtyApproved);
+      if (newlyReleasedQty > 0) {
+        if (orderItem.variant_id) {
+          await connection.query('UPDATE product_variants SET stock_qty = stock_qty + ? WHERE id = ?', [newlyReleasedQty, orderItem.variant_id]);
+        } else {
+          await connection.query('UPDATE products SET stock_qty = stock_qty + ? WHERE id = ?', [newlyReleasedQty, orderItem.product_id]);
+        }
+      }
+
       itemSummaryParts.push(`${orderItem.product_name} (${qtyApproved}/${qtyRequested})`);
     }
 
@@ -89,7 +117,15 @@ async function approveResellerOrder(req, res, next) {
       newOrderStatus = 'cancelled';
     }
 
-    await connection.query('UPDATE orders SET status = ? WHERE id = ?', [newOrderStatus, id]);
+    const [approvedTotals] = await connection.query(
+      'SELECT COALESCE(SUM(line_total), 0) AS subtotal FROM order_items WHERE order_id = ? AND status != "rejected"',
+      [id]
+    );
+    const approvedSubtotal = parseFloat(approvedTotals[0]?.subtotal || 0);
+    await connection.query(
+      'UPDATE orders SET status = ?, subtotal = ?, discount_amount = 0, coupon_code = NULL, coupon_discount = 0, grand_total = ? + shipping_cost WHERE id = ?',
+      [newOrderStatus, approvedSubtotal, approvedSubtotal, id]
+    );
     await connection.commit();
     connection.release();
 
@@ -126,10 +162,18 @@ async function updateAdminOrderItem(req, res, next) {
     const items = await query('SELECT * FROM order_items WHERE id = ? AND order_id = ?', [itemId, id]);
     if (!items || items.length === 0) return res.status(404).json({ success: false, message: 'Order item not found' });
     const item = items[0];
+    const orders = await query('SELECT placed_by_role, status, shipping_cost FROM orders WHERE id = ?', [id]);
+    if (orders.length === 0) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (orders[0].placed_by_role !== 'retailer' || orders[0].status !== 'pending_approval') {
+      return res.status(409).json({ success: false, message: 'Only pending retailer orders can be edited.' });
+    }
 
     let newPrice = item.admin_unit_price !== null && item.admin_unit_price !== undefined ? parseFloat(item.admin_unit_price) : parseFloat(item.unit_price);
     if (admin_unit_price !== undefined && admin_unit_price !== null && !isNaN(parseFloat(admin_unit_price))) {
       newPrice = parseFloat(admin_unit_price);
+    }
+    if (!Number.isFinite(newPrice) || newPrice < 0) {
+      return res.status(400).json({ success: false, message: 'A non-negative unit price is required' });
     }
 
     let newQtyApproved = item.qty_approved !== null && item.qty_approved !== undefined ? parseInt(item.qty_approved, 10) : parseInt(item.qty_ordered, 10);
@@ -140,6 +184,9 @@ async function updateAdminOrderItem(req, res, next) {
     let newQtyOrdered = item.qty_ordered;
     if (qty_ordered !== undefined && qty_ordered !== null && !isNaN(parseInt(qty_ordered, 10))) {
       newQtyOrdered = Math.max(1, parseInt(qty_ordered, 10));
+    }
+    if (newQtyApproved > newQtyOrdered) {
+      return res.status(400).json({ success: false, message: 'Approved quantity cannot exceed ordered quantity' });
     }
 
     let itemStatus = item.status;
@@ -153,6 +200,18 @@ async function updateAdminOrderItem(req, res, next) {
 
     const newLineTotal = newPrice * newQtyApproved;
 
+    const previouslyReserved = item.qty_approved !== null && item.qty_approved !== undefined
+      ? parseInt(item.qty_approved, 10)
+      : parseInt(item.qty_ordered, 10);
+    if (newQtyApproved < previouslyReserved) {
+      const released = previouslyReserved - newQtyApproved;
+      if (item.variant_id) {
+        await query('UPDATE product_variants SET stock_qty = stock_qty + ? WHERE id = ?', [released, item.variant_id]);
+      } else {
+        await query('UPDATE products SET stock_qty = stock_qty + ? WHERE id = ?', [released, item.product_id]);
+      }
+    }
+
     await query(
       `UPDATE order_items 
        SET admin_unit_price = ?, qty_ordered = ?, qty_approved = ?, line_total = ?, status = ?
@@ -163,11 +222,10 @@ async function updateAdminOrderItem(req, res, next) {
     // Recalculate overall order subtotal and grand_total
     const allItems = await query('SELECT line_total FROM order_items WHERE order_id = ? AND status != "rejected"', [id]);
     const newSubtotal = allItems.reduce((sum, i) => sum + parseFloat(i.line_total || 0), 0);
-    const orders = await query('SELECT shipping_cost FROM orders WHERE id = ?', [id]);
     const shippingCost = parseFloat(orders[0]?.shipping_cost || 0);
     const newGrandTotal = newSubtotal + shippingCost;
 
-    await query('UPDATE orders SET subtotal = ?, grand_total = ? WHERE id = ?', [newSubtotal, newGrandTotal, id]);
+    await query('UPDATE orders SET subtotal = ?, discount_amount = 0, coupon_code = NULL, coupon_discount = 0, grand_total = ? WHERE id = ?', [newSubtotal, newGrandTotal, id]);
 
     res.json({
       success: true,

@@ -12,6 +12,7 @@ router.delete('/', optionalAuth, cartController.clearCart);
 // Coupon application endpoints
 router.post('/coupon', optionalAuth, cartController.applyCoupon);
 router.delete('/coupon', optionalAuth, cartController.removeCoupon);
+router.post('/offers', optionalAuth, cartController.applyOffers);
 
 // Merge cart endpoint
 router.post('/merge', optionalAuth, cartController.mergeCart);

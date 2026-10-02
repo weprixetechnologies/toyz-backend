@@ -5,11 +5,16 @@ const eventBus = require('../../events/bus');
 async function validateCartOffers(req, res, next) {
   try {
     const { subtotal = 0, coupon_code } = req.body;
+    const selectedOfferIds = Array.isArray(req.body.selected_offer_ids) ? req.body.selected_offer_ids : [];
+    if (req.user?.role === 'retailer' && (coupon_code || selectedOfferIds.length > 0)) {
+      return res.status(403).json({ success: false, message: 'Retailers cannot apply extra offers or coupons.' });
+    }
     const evaluation = await evaluateOffers({
       subtotal: parseFloat(subtotal),
       userRole: req.user?.role || 'customer',
       couponCode: coupon_code || null,
-      userId: req.user?.id || null
+      userId: req.user?.id || null,
+      selectedOfferIds
     });
 
     res.json({ success: true, data: evaluation });
@@ -20,7 +25,14 @@ async function validateCartOffers(req, res, next) {
 
 async function listOffers(req, res, next) {
   try {
-    const offers = await query('SELECT * FROM offers ORDER BY priority DESC, id DESC');
+    const sql = req.user?.role === 'admin' || req.user?.role === 'superadmin'
+      ? 'SELECT * FROM offers ORDER BY priority DESC, id DESC'
+      : `SELECT * FROM offers
+         WHERE is_active = 1
+           AND (start_time IS NULL OR start_time <= NOW())
+           AND (end_time IS NULL OR end_time >= NOW())
+         ORDER BY priority DESC, id DESC`;
+    const offers = await query(sql);
     res.json({ success: true, data: { offers } });
   } catch (error) {
     next(error);

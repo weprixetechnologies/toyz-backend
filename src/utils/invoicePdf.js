@@ -5,7 +5,11 @@ function generateInvoiceHtml(order, items, settings = {}) {
 
   const dateStr = new Date(order.created_at).toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' });
 
-  const itemRows = items.map((item, idx) => `
+  const itemRows = items.filter(item => item.status !== 'rejected' && (item.qty_approved === null || item.qty_approved > 0)).map((item, idx) => {
+    const qty = item.qty_approved !== null && item.qty_approved !== undefined ? item.qty_approved : item.qty_ordered;
+    const unitPrice = item.admin_unit_price !== null && item.admin_unit_price !== undefined ? item.admin_unit_price : item.unit_price;
+    const lineTotal = parseFloat(unitPrice) * parseInt(qty, 10);
+    return `
     <tr>
       <td style="padding: 8px; border-bottom: 1px solid #ddd;">${idx + 1}</td>
       <td style="padding: 8px; border-bottom: 1px solid #ddd;">
@@ -13,12 +17,13 @@ function generateInvoiceHtml(order, items, settings = {}) {
         ${item.variant_label ? `<br><small style="color: #666;">Variant: ${item.variant_label}</small>` : ''}
         ${item.sku ? `<br><small style="color: #888;">SKU: ${item.sku}</small>` : ''}
       </td>
-      <td style="padding: 8px; border-bottom: 1px solid #ddd; text-align: center;">${item.qty_ordered}</td>
-      <td style="padding: 8px; border-bottom: 1px solid #ddd; text-align: right;">${currency}${parseFloat(item.unit_price).toFixed(2)}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #ddd; text-align: center;">${qty}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #ddd; text-align: right;">${currency}${parseFloat(unitPrice).toFixed(2)}</td>
       <td style="padding: 8px; border-bottom: 1px solid #ddd; text-align: right;">${item.tax_rate}%</td>
-      <td style="padding: 8px; border-bottom: 1px solid #ddd; text-align: right;">${currency}${parseFloat(item.line_total).toFixed(2)}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #ddd; text-align: right;">${currency}${lineTotal.toFixed(2)}</td>
     </tr>
-  `).join('');
+  `;
+  }).join('');
 
   return `
   <!DOCTYPE html>

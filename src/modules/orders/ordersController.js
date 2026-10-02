@@ -1,4 +1,4 @@
-const { getProductMoq, resolvePrice } = require('../../utils/priceResolver');
+const { getProductMoq, resolvePrice, isApprovedRetailer } = require('../../utils/priceResolver');
 const { query, pool } = require('../../config/db');
 const eventBus = require('../../events/bus');
 
@@ -21,6 +21,17 @@ async function placeOrder(req, res, next) {
     }
 
     const { shipping_address_id, shipping_address, billing_gstin, notes, is_buy_now, buy_now_item, coupon_code } = req.body;
+    const selectedOfferIds = Array.isArray(req.body.selected_offer_ids) ? req.body.selected_offer_ids : [];
+    const requestedPaymentMethod = req.body.payment_method || 'cod';
+    const isCod = requestedPaymentMethod === 'cod';
+    if (isCod && !isCodEnabled) {
+      connection.release();
+      return res.status(400).json({ success: false, message: 'Cash on Delivery is not currently available.' });
+    }
+    if (!isCod && !(await connection.query('SELECT 1 FROM payment_gateways WHERE key_name = ? AND is_active = 1 LIMIT 1', [requestedPaymentMethod]))[0].length) {
+      connection.release();
+      return res.status(400).json({ success: false, message: 'Selected payment method is not available.' });
+    }
     let address = shipping_address;
 
     if (shipping_address_id && !address) {
@@ -43,16 +54,22 @@ async function placeOrder(req, res, next) {
     if (is_buy_now && buy_now_item) {
       const { product_id, variant_id, qty } = buy_now_item;
       let queryStr = `
-        SELECT p.name as product_name, p.sku as product_sku, p.base_price, p.sale_price, p.tax_rate, p.stock_qty as p_stock, p.id as product_id,
-               pv.id as variant_id, pv.sku as variant_sku, pv.price as variant_price, pv.sale_price as variant_sale_price, pv.stock_qty as pv_stock
+        SELECT p.name as product_name, p.sku as product_sku, p.base_price, p.sale_price, p.tax_rate, p.stock_qty as p_stock,
+               p.track_inventory, p.is_active, p.visible_to_resellers, p.id as product_id,
+               pv.id as variant_id, pv.sku as variant_sku, pv.price as variant_price, pv.sale_price as variant_sale_price,
+               pv.stock_qty as pv_stock, pv.is_active as variant_is_active
         FROM products p
-        LEFT JOIN product_variants pv ON pv.id = ?
-        WHERE p.id = ?
+        LEFT JOIN product_variants pv ON pv.id = ? AND pv.product_id = ? AND pv.is_active = 1
+        WHERE p.id = ? AND p.deleted_at IS NULL AND p.is_active = 1
       `;
-      const [items] = await connection.query(queryStr, [variant_id || null, product_id]);
+      const [items] = await connection.query(queryStr, [variant_id || null, product_id, product_id]);
       if (items.length === 0) {
         connection.release();
         return res.status(400).json({ success: false, message: 'Product not found' });
+      }
+      if (variant_id && (!items[0].variant_id || items[0].variant_is_active !== 1)) {
+        connection.release();
+        return res.status(400).json({ success: false, message: 'Invalid product variant' });
       }
       items[0].qty = qty || 1;
       cartItems = items;
@@ -65,11 +82,13 @@ async function placeOrder(req, res, next) {
       }
       cartId = carts[0].id;
       const [cItems] = await connection.query(
-        `SELECT ci.*, p.name as product_name, p.sku as product_sku, p.base_price, p.sale_price, p.tax_rate, p.stock_qty as p_stock, p.id as product_id,
-                pv.sku as variant_sku, pv.price as variant_price, pv.sale_price as variant_sale_price, pv.stock_qty as pv_stock
+        `SELECT ci.*, p.name as product_name, p.sku as product_sku, p.base_price, p.sale_price, p.tax_rate, p.stock_qty as p_stock,
+                p.track_inventory, p.is_active, p.visible_to_resellers, p.id as product_id,
+                pv.id as variant_id, pv.sku as variant_sku, pv.price as variant_price, pv.sale_price as variant_sale_price,
+                pv.stock_qty as pv_stock, pv.is_active as variant_is_active
          FROM cart_items ci
-         JOIN products p ON ci.product_id = p.id
-         LEFT JOIN product_variants pv ON ci.variant_id = pv.id
+         JOIN products p ON ci.product_id = p.id AND p.deleted_at IS NULL AND p.is_active = 1
+         LEFT JOIN product_variants pv ON ci.variant_id = pv.id AND pv.product_id = p.id AND pv.is_active = 1
          WHERE ci.cart_id = ?`,
         [cartId]
       );
@@ -77,11 +96,23 @@ async function placeOrder(req, res, next) {
         connection.release();
         return res.status(400).json({ success: false, message: 'Cart is empty' });
       }
+      if (cItems.some(item => item.variant_id && !item.variant_is_active)) {
+        connection.release();
+        return res.status(400).json({ success: false, message: 'One or more cart variants are no longer available.' });
+      }
       cartItems = cItems;
     }
 
     // 3. MOQ Check for Retailers
-    const isRetailer = req.user.role === 'retailer';
+    const isRetailer = await isApprovedRetailer(req.user);
+    if (isRetailer && (coupon_code || selectedOfferIds.length > 0)) {
+      connection.release();
+      return res.status(403).json({ success: false, message: 'Retailers cannot apply extra offers or coupons.' });
+    }
+    if (isRetailer && cartItems.some(item => item.visible_to_resellers !== 1)) {
+      connection.release();
+      return res.status(400).json({ success: false, message: 'One or more products are not available to retailers.' });
+    }
     if (isRetailer) {
       const { getProductMoq } = require('../../utils/priceResolver');
       for (const item of cartItems) {
@@ -112,12 +143,21 @@ async function placeOrder(req, res, next) {
     const orderItemsData = [];
 
     for (const item of cartItems) {
+      const qty = parseInt(item.qty, 10);
+      if (!Number.isInteger(qty) || qty < 1) {
+        throw Object.assign(new Error('Quantity must be a positive integer'), { statusCode: 400 });
+      }
+      const trackInventory = item.track_inventory !== 0;
+      const availableStock = item.variant_id ? item.pv_stock : item.p_stock;
+      if (trackInventory && Number(availableStock) < qty) {
+        throw Object.assign(new Error(`Insufficient stock for product '${item.product_name}'`), { statusCode: 400 });
+      }
       const pObj = { id: item.product_id, base_price: item.base_price, sale_price: item.sale_price };
       const vObj = item.variant_id ? { id: item.variant_id, price: item.variant_price, sale_price: item.variant_sale_price } : null;
-      const priceRes = await resolvePrice({ user: req.user, product: pObj, variant: vObj, qty: item.qty });
+      const priceRes = await resolvePrice({ user: req.user, product: pObj, variant: vObj, qty });
       const unitPrice = priceRes.unit_price;
 
-      const lineTotal = unitPrice * item.qty;
+      const lineTotal = unitPrice * qty;
       subtotal += lineTotal;
 
       orderItemsData.push({
@@ -126,17 +166,20 @@ async function placeOrder(req, res, next) {
         product_name: item.product_name,
         variant_label: item.variant_sku || null,
         sku: item.variant_sku || item.product_sku,
-        qty_ordered: item.qty,
+        qty_ordered: qty,
         unit_price: unitPrice,
         tax_rate: item.tax_rate || 0,
         line_total: lineTotal
       });
 
       // Decrement stock
-      if (item.variant_id) {
-        await connection.query('UPDATE product_variants SET stock_qty = GREATEST(0, stock_qty - ?) WHERE id = ?', [item.qty, item.variant_id]);
-      } else {
-        await connection.query('UPDATE products SET stock_qty = GREATEST(0, stock_qty - ?) WHERE id = ?', [item.qty, item.product_id]);
+      if (trackInventory) {
+        const [stockUpdate] = item.variant_id
+          ? await connection.query('UPDATE product_variants SET stock_qty = stock_qty - ? WHERE id = ? AND stock_qty >= ?', [qty, item.variant_id, qty])
+          : await connection.query('UPDATE products SET stock_qty = stock_qty - ? WHERE id = ? AND stock_qty >= ?', [qty, item.product_id, qty]);
+        if (stockUpdate.affectedRows !== 1) {
+          throw Object.assign(new Error(`Insufficient stock for product '${item.product_name}'`), { statusCode: 400 });
+        }
       }
     }
 
@@ -144,9 +187,10 @@ async function placeOrder(req, res, next) {
     const { evaluateOffers } = require('../../utils/offerEngine');
     const evaluation = await evaluateOffers({
       subtotal,
-      userRole: req.user.role || 'customer',
+      userRole: isRetailer ? 'retailer' : 'customer',
       couponCode: coupon_code || null,
-      userId: req.user.id
+      userId: req.user.id,
+      selectedOfferIds
     });
     
     // Fallback gracefully if evaluateOffers fails
@@ -182,7 +226,7 @@ async function placeOrder(req, res, next) {
     const [orderRes] = await connection.query(
       `INSERT INTO orders
         (order_number, user_id, placed_by_role, status, shipping_name, shipping_phone, shipping_line1, shipping_line2, shipping_city, shipping_state, shipping_pin, shipping_country, billing_name, billing_gstin, subtotal, discount_amount, coupon_code, coupon_discount, shipping_cost, grand_total, payment_method, is_cod, ref_code)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cod', 1, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         orderNumber,
         req.user.id,
@@ -204,6 +248,8 @@ async function placeOrder(req, res, next) {
         couponDiscount,
         shippingCost,
         grandTotal,
+        requestedPaymentMethod,
+        isCod ? 1 : 0,
         refCode
       ]
     );

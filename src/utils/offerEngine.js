@@ -59,10 +59,13 @@ async function validateCoupon(code, subtotal, userId) {
   };
 }
 
-async function evaluateOffers({ subtotal, cartItems, userRole = 'customer', couponCode = null, userId = null }) {
+async function evaluateOffers({ subtotal, cartItems, userRole = 'customer', couponCode = null, userId = null, selectedOfferIds = [] }) {
   const activeOffers = await getActiveOffers();
+  const selected = new Set((Array.isArray(selectedOfferIds) ? selectedOfferIds : []).map(id => String(id)));
   let offerDiscount = 0;
   const appliedOffers = [];
+  const availableOffers = [];
+  const rejectedOfferIds = [];
 
   for (const offer of activeOffers) {
     // Role check
@@ -72,10 +75,41 @@ async function evaluateOffers({ subtotal, cartItems, userRole = 'customer', coup
         roles = typeof offer.user_roles === 'string' ? JSON.parse(offer.user_roles) : offer.user_roles;
       } catch (e) {}
     }
-    if (!roles.includes(userRole)) continue;
+    const retailerBlocked = userRole === 'retailer';
+    const roleEligible = roles.includes(userRole) && !retailerBlocked;
+    let userEligible = true;
+    if (offer.user_ids) {
+      try {
+        const userIds = typeof offer.user_ids === 'string' ? JSON.parse(offer.user_ids) : offer.user_ids;
+        userEligible = Array.isArray(userIds) && userIds.map(String).includes(String(userId));
+      } catch (e) {
+        userEligible = false;
+      }
+    }
+    const minValueEligible = subtotal >= parseFloat(offer.min_cart_value || 0);
+    const eligible = roleEligible && userEligible && minValueEligible;
+    const blockedReason = retailerBlocked
+      ? 'RETAILER'
+      : (!roles.includes(userRole) || !userEligible ? 'NOT ELIGIBLE' : (!minValueEligible ? `MINIMUM CART VALUE ₹${offer.min_cart_value}` : null));
 
-    // Minimum cart value check
-    if (subtotal < parseFloat(offer.min_cart_value || 0)) continue;
+    availableOffers.push({
+      id: offer.id,
+      name: offer.name,
+      description: offer.description,
+      offer_type: offer.offer_type,
+      discount_type: offer.discount_type,
+      discount_value: parseFloat(offer.discount_value || 0),
+      min_cart_value: parseFloat(offer.min_cart_value || 0),
+      stackable: Boolean(offer.stackable),
+      eligible,
+      blocked_reason: blockedReason,
+      applied: false
+    });
+
+    if (!eligible || !selected.has(String(offer.id))) {
+      if (selected.has(String(offer.id)) && !eligible) rejectedOfferIds.push(offer.id);
+      continue;
+    }
 
     let discountForThisOffer = 0;
     if (offer.discount_type === 'percent') {
@@ -89,6 +123,7 @@ async function evaluateOffers({ subtotal, cartItems, userRole = 'customer', coup
 
     if (discountForThisOffer > 0) {
       offerDiscount += discountForThisOffer;
+      availableOffers[availableOffers.length - 1].applied = true;
       appliedOffers.push({
         id: offer.id,
         name: offer.name,
@@ -106,6 +141,7 @@ async function evaluateOffers({ subtotal, cartItems, userRole = 'customer', coup
 
   if (couponCode) {
     try {
+      if (userRole === 'retailer') throw new Error('Retailers cannot apply extra offers or coupons');
       appliedCoupon = await validateCoupon(couponCode, remainingSubtotal, userId);
       if (appliedCoupon) {
         couponDiscount = appliedCoupon.discount_amount;
@@ -125,7 +161,9 @@ async function evaluateOffers({ subtotal, cartItems, userRole = 'customer', coup
     total_discount: totalDiscount,
     final_subtotal: finalSubtotal,
     applied_offers: appliedOffers,
-    applied_coupon: appliedCoupon
+    applied_coupon: appliedCoupon,
+    available_offers: availableOffers,
+    rejected_offer_ids: rejectedOfferIds
   };
 }
 

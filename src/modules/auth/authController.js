@@ -41,7 +41,8 @@ async function register(req, res, next) {
     }
 
     const password_hash = await bcrypt.hash(password, 10);
-    const assignedRole = ['customer', 'retailer'].includes(role) ? role : 'customer';
+    // Retailer access must come from the reseller application and admin approval.
+    const assignedRole = 'customer';
 
     const result = await query(
       `INSERT INTO users (name, email, phone, password_hash, role, status)

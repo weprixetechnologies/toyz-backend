@@ -7,7 +7,7 @@ async function listProducts(req, res, next) {
   try {
     const { category_id, brand_id, is_featured, search, min_price, max_price, in_stock, min_rating, sort = 'created_at_desc', page = 1, limit = 20 } = req.query;
 
-    const cacheKey = `products_list:${category_id || ''}:${brand_id || ''}:${is_featured || ''}:${search || ''}:${min_price || ''}:${max_price || ''}:${in_stock || ''}:${min_rating || ''}:${sort}:${page}:${limit}:role_${req.user?.role || 'guest'}`;
+  const cacheKey = `products_list:${category_id || ''}:${brand_id || ''}:${is_featured || ''}:${search || ''}:${min_price || ''}:${max_price || ''}:${in_stock || ''}:${min_rating || ''}:${sort}:${page}:${limit}:user_${req.user?.id || 'guest'}:role_${req.user?.role || 'guest'}`;
     const cachedData = await redisClient.get(cacheKey);
     if (cachedData) {
       console.log(`[Cache] HIT - Served from Redis: ${cacheKey}`);
@@ -188,8 +188,9 @@ async function getProductBySlug(req, res, next) {
        FROM products p
        LEFT JOIN categories c ON p.category_id = c.id
        LEFT JOIN brands b ON p.brand_id = b.id
-       WHERE (p.slug = ? OR p.id = ?) AND p.deleted_at IS NULL`,
-      [slug, slug]
+       WHERE (p.slug = ? OR p.id = ?) AND p.deleted_at IS NULL AND p.is_active = 1
+         AND (p.visible_to_resellers = 1 OR ? <> 'retailer')`,
+      [slug, slug, req.user?.role || 'guest']
     );
 
     if (products.length === 0) {
@@ -221,7 +222,21 @@ async function getProductBySlug(req, res, next) {
          ORDER BY ag.id ASC`,
         [v.id]
       );
-      return { ...v, attributes: attrs };
+      const price = await resolvePrice({
+        user: req.user || null,
+        product,
+        variant: v,
+        qty: 1
+      });
+      return {
+        ...v,
+        attributes: attrs,
+        resolved_price: price.unit_price,
+        original_price: price.original_price,
+        discount_applied: price.discount_applied,
+        pricing_source: price.source,
+        moq: price.moq
+      };
     }));
 
     // ── Attach reseller_price for retailer users ─────────────────────────────
