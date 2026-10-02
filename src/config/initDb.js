@@ -823,6 +823,7 @@ async function initDb() {
     ['currency_symbol', '₹', 'general', 'Default currency symbol'],
     ['cod_enabled', '1', 'payment', 'Cash on delivery enable toggle'],
     ['shipping_cost_default', '50.00', 'shipping', 'Default shipping charge'],
+    ['global_shipping_fee', '50.00', 'shipping', 'Fallback shipping charge when no pincode rule matches'],
     ['free_shipping_threshold', '999.00', 'shipping', 'Order subtotal threshold for free shipping'],
     ['shipping_applies_to', 'customer_only', 'shipping', 'Whether shipping applies to customer_only or all'],
     ['low_stock_threshold_global', '5', 'inventory', 'Default threshold for low stock alert'],

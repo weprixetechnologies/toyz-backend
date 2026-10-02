@@ -111,9 +111,9 @@ class ShippingService {
   }
 
   async getShippingOptions({ pinCode = null, subtotal = 0, userRole = 'customer' } = {}) {
-    if (pinCode) return [await this.getQuote({ pinCode, subtotal, userRole })];
-    const presets = await this.getActivePresets();
-    return presets.length > 0 ? presets : [await this.getQuote({ subtotal, userRole })];
+    // Presets are pincode-specific pricing rules, not selectable methods.
+    // Until a pincode is known, return the configured fallback quote.
+    return [await this.getQuote({ pinCode, subtotal, userRole })];
   }
 
   /**
@@ -129,13 +129,17 @@ class ShippingService {
    */
   async adminCreatePreset(data) {
     const { label, description, cost, estimated_days, is_active, sort_order } = data;
-    if (!label || cost === undefined) {
-      throw new Error('Label and cost are required.');
+    if (!/^\d{6}$/.test(String(label || '').trim())) {
+      throw new Error('A valid 6-digit pincode is required.');
+    }
+    const parsedCost = Number(cost);
+    if (!Number.isFinite(parsedCost) || parsedCost < 0) {
+      throw new Error('Shipping cost must be a valid non-negative number.');
     }
     const result = await db.query(
       `INSERT INTO shipping_presets (label, description, cost, estimated_days, is_active, sort_order)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [label, description || null, parseFloat(cost), estimated_days || null, is_active !== undefined ? is_active : 1, sort_order || 0]
+      [String(label).trim(), description || null, parsedCost, estimated_days || null, is_active !== undefined ? is_active : 1, sort_order || 0]
     );
 
     const presets = await db.query('SELECT * FROM shipping_presets WHERE id = ?', [result.insertId]);
@@ -147,6 +151,12 @@ class ShippingService {
    */
   async adminUpdatePreset(id, data) {
     const { label, description, cost, estimated_days, is_active, sort_order } = data;
+    if (label !== undefined && !/^\d{6}$/.test(String(label).trim())) {
+      throw new Error('A valid 6-digit pincode is required.');
+    }
+    if (cost !== undefined && (!Number.isFinite(Number(cost)) || Number(cost) < 0)) {
+      throw new Error('Shipping cost must be a valid non-negative number.');
+    }
     await db.query(
       `UPDATE shipping_presets 
        SET label = COALESCE(?, label),
@@ -156,7 +166,7 @@ class ShippingService {
            is_active = COALESCE(?, is_active),
            sort_order = COALESCE(?, sort_order)
        WHERE id = ?`,
-      [label, description, cost !== undefined ? parseFloat(cost) : null, estimated_days, is_active, sort_order, id]
+      [label !== undefined ? String(label).trim() : undefined, description, cost !== undefined ? Number(cost) : null, estimated_days, is_active, sort_order, id]
     );
 
     const presets = await db.query('SELECT * FROM shipping_presets WHERE id = ?', [id]);
