@@ -87,10 +87,10 @@ class ShippingService {
     const freeThreshold = parseFloat(values.free_shipping_threshold || '0') || 0;
 
     if (userRole === 'retailer' && appliesTo === 'customer_only') {
-      return { id: 'retailer-free', label: 'Retailer Shipping', cost: 0, estimated_days: 'To be confirmed', source: 'retailer_scope' };
+      return { id: 'retailer-free', label: 'Retailer Shipping', cost: 0, estimated_days: 'To be confirmed', source: 'retailer_scope', free_shipping_threshold: freeThreshold };
     }
     if (freeThreshold > 0 && parseFloat(subtotal || 0) >= freeThreshold) {
-      return { id: 'free-threshold', label: 'Free Shipping', cost: 0, estimated_days: 'Standard delivery', source: 'free_threshold' };
+      return { id: 'free-threshold', label: 'Free Shipping', cost: 0, estimated_days: 'Standard delivery', source: 'free_threshold', free_shipping_threshold: freeThreshold };
     }
 
     if (pinCode) {
@@ -98,7 +98,7 @@ class ShippingService {
         'SELECT * FROM shipping_presets WHERE label = ? AND is_active = 1 ORDER BY sort_order ASC, id ASC LIMIT 1',
         [String(pinCode).trim()]
       );
-      if (presets.length > 0) return { ...presets[0], source: 'pincode' };
+      if (presets.length > 0) return { ...presets[0], source: 'pincode', free_shipping_threshold: freeThreshold };
     }
 
     return {
@@ -106,7 +106,8 @@ class ShippingService {
       label: 'Standard Shipping',
       cost: fallbackCost,
       estimated_days: 'Standard delivery',
-      source: 'fallback'
+      source: 'fallback',
+      free_shipping_threshold: freeThreshold
     };
   }
 
