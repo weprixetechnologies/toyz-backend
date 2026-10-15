@@ -7,12 +7,13 @@ async function listProducts(req, res, next) {
   try {
     const { category_id, brand_id, is_featured, search, min_price, max_price, in_stock, min_rating, sort = 'created_at_desc', page = 1, limit = 20 } = req.query;
 
-  const cacheKey = `products_list:${category_id || ''}:${brand_id || ''}:${is_featured || ''}:${search || ''}:${min_price || ''}:${max_price || ''}:${in_stock || ''}:${min_rating || ''}:${sort}:${page}:${limit}:user_${req.user?.id || 'guest'}:role_${req.user?.role || 'guest'}`;
+    const cacheKey = `products_list:${category_id || ''}:${brand_id || ''}:${is_featured || ''}:${search || ''}:${min_price || ''}:${max_price || ''}:${in_stock || ''}:${min_rating || ''}:${sort}:${page}:${limit}:user_${req.user?.id || 'guest'}:role_${req.user?.role || 'guest'}`;
     const cachedData = await redisClient.get(cacheKey);
     if (cachedData) {
       console.log(`[Cache] HIT - Served from Redis: ${cacheKey}`);
       const parsedData = JSON.parse(cachedData);
       parsedData.meta = { cached: true };
+      res.set('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300');
       return res.json(parsedData);
     }
 
@@ -74,25 +75,37 @@ async function listProducts(req, res, next) {
     }
 
     let orderBy = 'ORDER BY p.id DESC';
-    if (sort === 'price_asc') orderBy = 'ORDER BY COALESCE(p.sale_price, p.base_price, (SELECT MIN(price) FROM product_variants WHERE product_id = p.id)) ASC';
-    if (sort === 'price_desc') orderBy = 'ORDER BY COALESCE(p.sale_price, p.base_price, (SELECT MIN(price) FROM product_variants WHERE product_id = p.id)) DESC';
+    if (sort === 'price_asc' || sort === 'price_low') orderBy = 'ORDER BY COALESCE(p.sale_price, p.base_price, (SELECT MIN(price) FROM product_variants WHERE product_id = p.id)) ASC';
+    if (sort === 'price_desc' || sort === 'price_high') orderBy = 'ORDER BY COALESCE(p.sale_price, p.base_price, (SELECT MIN(price) FROM product_variants WHERE product_id = p.id)) DESC';
     if (sort === 'name_asc') orderBy = 'ORDER BY p.name ASC';
+    if (sort === 'newest') orderBy = 'ORDER BY p.created_at DESC, p.id DESC';
 
-    // To support HAVING with aggregate, we need to inject the subquery into the count too if we use HAVING.
-    // Simpler count:
-    let countSql = `
-      SELECT COUNT(*) as total FROM (
-        SELECT p.id,
-               (SELECT ROUND(AVG(rating),1) FROM product_reviews WHERE product_id = p.id AND status = 'approved') as avg_rating
-        FROM products p
-        ${whereClause}
-        ${havingClause ? havingClause : ''}
-      ) as t
-    `;
-    const [{ total }] = await query(countSql, [...params, ...havingParams]);
+    // Fast count: Avoid correlated subquery for avg_rating if havingClause is empty
+    let countSql;
+    let countQueryParams;
+    if (havingClause) {
+      countSql = `
+        SELECT COUNT(*) as total FROM (
+          SELECT p.id,
+                 (SELECT ROUND(AVG(rating),1) FROM product_reviews WHERE product_id = p.id AND status = 'approved') as avg_rating
+          FROM products p
+          ${whereClause}
+          ${havingClause}
+        ) as t
+      `;
+      countQueryParams = [...params, ...havingParams];
+    } else {
+      countSql = `SELECT COUNT(*) as total FROM products p ${whereClause}`;
+      countQueryParams = params;
+    }
+    const [{ total }] = await query(countSql, countQueryParams);
 
+    // Selective column projection: Avoid full-text/LONGTEXT descriptions and metadata on listings
     const productsSql = `
-      SELECT p.*, c.name as category_name, c.slug as category_slug, b.name as brand_name,
+      SELECT p.id, p.category_id, p.brand_id, p.name, p.slug, p.product_type,
+             p.base_price, p.sale_price, p.cost_price, p.sku, p.stock_qty,
+             p.track_inventory, p.is_active, p.is_featured, p.created_at,
+             c.name as category_name, c.slug as category_slug, b.name as brand_name,
              (SELECT url FROM product_images WHERE product_id = p.id ORDER BY is_primary DESC, sort_order ASC LIMIT 1) as primary_image,
              (SELECT ROUND(AVG(rating),1) FROM product_reviews WHERE product_id = p.id AND status = 'approved') as avg_rating,
              (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id AND status = 'approved') as review_count
@@ -172,6 +185,7 @@ async function listProducts(req, res, next) {
 
     await redisClient.setex(cacheKey, ttl, JSON.stringify(responseObj));
 
+    res.set('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300');
     res.json(responseObj);
   } catch (error) {
     next(error);

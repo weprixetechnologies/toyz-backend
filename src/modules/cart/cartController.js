@@ -46,9 +46,9 @@ async function getCart(req, res, next) {
     if (!Array.isArray(selectedOfferIds)) selectedOfferIds = [];
 
     const items = await query(
-      `SELECT ci.*, p.name as product_name, p.slug as product_slug, p.base_price, p.sale_price,
+      `SELECT ci.*, p.name as product_name, p.slug as product_slug, p.base_price, p.sale_price, p.stock_qty as product_stock,
               (SELECT url FROM product_images WHERE product_id = p.id ORDER BY is_primary DESC, sort_order ASC LIMIT 1) as image,
-              pv.sku as variant_sku, pv.price as variant_price, pv.sale_price as variant_sale_price
+              pv.sku as variant_sku, pv.price as variant_price, pv.sale_price as variant_sale_price, pv.stock_qty as variant_stock
        FROM cart_items ci
        JOIN products p ON ci.product_id = p.id
        LEFT JOIN product_variants pv ON ci.variant_id = pv.id
@@ -73,6 +73,7 @@ async function getCart(req, res, next) {
         original_price: priceInfo.original_price,
         discount_applied: priceInfo.discount_applied,
         price_source: priceInfo.source,
+        in_stock: (item.variant_id ? item.variant_stock : item.product_stock) > 0,
         line_total: lineTotal
       });
     }

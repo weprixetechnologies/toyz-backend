@@ -30,9 +30,18 @@ class SeoController {
         { url: '/', priority: '1.0', changefreq: 'daily' },
         { url: '/products', priority: '0.9', changefreq: 'daily' },
         { url: '/categories', priority: '0.8', changefreq: 'weekly' },
+        { url: '/blogs', priority: '0.8', changefreq: 'daily' },
         { url: '/about', priority: '0.5', changefreq: 'monthly' },
         { url: '/contact', priority: '0.5', changefreq: 'monthly' }
       ];
+
+      // Fetch published blogs
+      let blogs = [];
+      try {
+        blogs = await db.query(
+          `SELECT slug, updated_at FROM blogs WHERE is_published = 1`
+        );
+      } catch (_) {}
 
       let xml = `<?xml version="1.0" encoding="UTF-8"?>\n`;
       xml += `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n`;
@@ -65,6 +74,17 @@ class SeoController {
         xml += `    <lastmod>${lastmod}</lastmod>\n`;
         xml += `    <changefreq>daily</changefreq>\n`;
         xml += `    <priority>0.8</priority>\n`;
+        xml += `  </url>\n`;
+      }
+
+      // Blogs XML
+      for (const b of (blogs || [])) {
+        const lastmod = b.updated_at ? new Date(b.updated_at).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+        xml += `  <url>\n`;
+        xml += `    <loc>${baseUrl}/blogs/${b.slug}</loc>\n`;
+        xml += `    <lastmod>${lastmod}</lastmod>\n`;
+        xml += `    <changefreq>weekly</changefreq>\n`;
+        xml += `    <priority>0.7</priority>\n`;
         xml += `  </url>\n`;
       }
 

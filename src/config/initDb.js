@@ -193,9 +193,12 @@ async function initDb() {
       deleted_at            DATETIME NULL,
       FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL,
       FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE SET NULL,
-      INDEX idx_slug      (slug),
-      INDEX idx_category  (category_id),
-      INDEX idx_active    (is_active)
+      INDEX idx_slug           (slug),
+      INDEX idx_category       (category_id),
+      INDEX idx_active         (is_active),
+      INDEX idx_status_active  (is_active, deleted_at),
+      INDEX idx_price          (sale_price, base_price),
+      INDEX idx_created_at     (created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
 
     // 11. product_images
@@ -798,6 +801,53 @@ async function initDb() {
       FOREIGN KEY (badge_id) REFERENCES badges(id) ON DELETE CASCADE,
       INDEX idx_badge (badge_id),
       INDEX idx_product (product_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+
+    // 48. blog_categories
+    `CREATE TABLE IF NOT EXISTS blog_categories (
+      id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      name        VARCHAR(100) NOT NULL UNIQUE,
+      slug        VARCHAR(120) NOT NULL UNIQUE,
+      icon        VARCHAR(50) DEFAULT 'Tag',
+      sort_order  INT DEFAULT 0,
+      is_active   TINYINT(1) DEFAULT 1,
+      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+
+    // 49. blogs
+    `CREATE TABLE IF NOT EXISTS blogs (
+      id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      title           VARCHAR(255) NOT NULL,
+      slug            VARCHAR(191) UNIQUE NOT NULL,
+      excerpt         TEXT,
+      content         LONGTEXT NOT NULL,
+      featured_image  VARCHAR(500),
+      category_name   VARCHAR(100) NOT NULL DEFAULT 'General',
+      category_slug   VARCHAR(120) NOT NULL DEFAULT 'general',
+      author_name     VARCHAR(120) NOT NULL DEFAULT 'ToyWorld Team',
+      reading_time    VARCHAR(30) DEFAULT '5 min read',
+      views_count     INT UNSIGNED DEFAULT 0,
+      is_published    TINYINT(1) DEFAULT 1,
+      published_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+      meta_title      VARCHAR(200),
+      meta_desc       VARCHAR(400),
+      og_image        VARCHAR(500),
+      canonical_url   VARCHAR(500),
+      created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_slug (slug),
+      INDEX idx_pub (is_published, published_at),
+      INDEX idx_cat (category_slug)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+
+    // 50. newsletter_subscribers
+    `CREATE TABLE IF NOT EXISTS newsletter_subscribers (
+      id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      email       VARCHAR(191) NOT NULL UNIQUE,
+      status      ENUM('subscribed','unsubscribed') DEFAULT 'subscribed',
+      source      VARCHAR(100) DEFAULT 'blog_sidebar',
+      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`
   ];
 
@@ -829,7 +879,9 @@ async function initDb() {
     ['low_stock_threshold_global', '5', 'inventory', 'Default threshold for low stock alert'],
     ['affiliate_cookie_days', '30', 'affiliate', 'Referral attribution cookie duration in days'],
     ['affiliate_default_commission_pct', '5.00', 'affiliate', 'Default affiliate commission percentage'],
-    ['reseller_order_approval', '1', 'reseller', 'Require admin approval for reseller orders']
+    ['reseller_order_approval', '1', 'reseller', 'Require admin approval for reseller orders'],
+    ['header_settings', JSON.stringify(require('../modules/settings/settingsController').DEFAULT_HEADER_SETTINGS), 'general', 'Storefront dynamic header and logo configuration'],
+    ['footer_settings', JSON.stringify(require('../modules/settings/settingsController').DEFAULT_FOOTER_SETTINGS), 'footer', 'Storefront dynamic footer configuration']
   ];
 
   for (const [key, val, group, desc] of defaultSettings) {
@@ -863,6 +915,31 @@ async function initDb() {
     );
   }
   console.log('[DB Init] Default SMS templates seeded.');
+
+  // Seed default Blog Categories and Posts
+  try {
+    await require('../modules/blogs/seedBlogs').seedBlogs(connection);
+  } catch (e) {
+    console.error('[DB Init Error] seedBlogs failed:', e.message);
+  }
+
+  // Ensure performance indexes on products table
+  const ensureIndexes = [
+    { name: 'idx_status_active', table: 'products', cols: '(is_active, deleted_at)' },
+    { name: 'idx_price', table: 'products', cols: '(sale_price, base_price)' },
+    { name: 'idx_created_at', table: 'products', cols: '(created_at)' }
+  ];
+  for (const idx of ensureIndexes) {
+    try {
+      const [existing] = await connection.query(`SHOW INDEX FROM ${idx.table} WHERE Key_name = ?`, [idx.name]);
+      if (existing.length === 0) {
+        await connection.query(`ALTER TABLE ${idx.table} ADD INDEX ${idx.name} ${idx.cols}`);
+        console.log(`[DB Init] Added index ${idx.name} on ${idx.table}`);
+      }
+    } catch (e) {
+      // ignore if table doesn't exist yet or fails gracefully
+    }
+  }
 
   await connection.end();
   console.log('[DB Init] Database initialization complete!');
