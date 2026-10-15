@@ -66,9 +66,11 @@ const DEFAULT_FOOTER_SETTINGS = {
 
 const DEFAULT_HEADER_SETTINGS = {
   logo_url: '',
-  logo_text: 'ToyWorld',
-  logo_tagline: 'DISCOVER • PLAY • LEARN',
-  show_tagline: true,
+  logo_text: '',
+  logo_tagline: '',
+  logo_width: 200,
+  logo_width_mobile: 150,
+  show_tagline: false,
   announcement_bar: {
     enabled: true,
     shipping_text: 'Free Shipping on Orders Above ₹999',
