@@ -34,6 +34,8 @@ const badgesRoutes = require('./modules/badges/badgesRoutes');
 const cacheRoutes = require('./modules/cache/cacheRoutes');
 const blogsRoutes = require('./modules/blogs/blogsRoutes');
 const newsletterRoutes = require('./modules/newsletter/newsletterRoutes');
+const floatingWidgetsRoutes = require('./modules/floatingWidgets/floatingWidgetsRoutes');
+const leadsRoutes = require('./modules/leads/leadsRoutes');
 
 const app = express();
 
@@ -111,6 +113,8 @@ app.use('/api/v1/badges', badgesRoutes);
 app.use('/api/v1/cache', cacheRoutes);
 app.use('/api/v1/blogs', blogsRoutes);
 app.use('/api/v1/newsletter', newsletterRoutes);
+app.use('/api/v1/floating-widgets', floatingWidgetsRoutes);
+app.use('/api/v1/leads', leadsRoutes);
 
 // Health Check & Sitemap Routes
 const seoController = require('./modules/seo/seoController');

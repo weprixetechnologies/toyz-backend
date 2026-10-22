@@ -848,6 +848,24 @@ async function initDb() {
       source      VARCHAR(100) DEFAULT 'blog_sidebar',
       created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+
+    // 51. leads (Floating Contact Form & Contact Page leads)
+    `CREATE TABLE IF NOT EXISTS leads (
+      id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      name        VARCHAR(150) NOT NULL,
+      phone       VARCHAR(25) NOT NULL,
+      address     TEXT NULL,
+      requirement TEXT NOT NULL,
+      source      VARCHAR(50) DEFAULT 'floating_widget',
+      status      ENUM('new','contacted','in_progress','converted','closed') DEFAULT 'new',
+      notes       TEXT NULL,
+      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_phone (phone),
+      INDEX idx_status (status),
+      INDEX idx_source (source),
+      INDEX idx_created_at (created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`
   ];
 
@@ -916,11 +934,22 @@ async function initDb() {
   }
   console.log('[DB Init] Default SMS templates seeded.');
 
-  // Seed default Blog Categories and Posts
+  // Seed default Floating Widgets & Chatbot configuration if not present
   try {
-    await require('../modules/blogs/seedBlogs').seedBlogs(connection);
+    const { DEFAULT_WIDGETS_CONFIG } = require('../modules/floatingWidgets/floatingWidgetsController');
+    const [existingWidgets] = await connection.query(
+      "SELECT setting_key FROM settings WHERE setting_key = 'floating_widgets_config' LIMIT 1"
+    );
+    if (existingWidgets.length === 0) {
+      await connection.query(
+        `INSERT INTO settings (setting_key, setting_value, setting_group, description)
+         VALUES ('floating_widgets_config', ?, 'general', 'Floating widgets and conditional chatbot flow configuration')`,
+        [JSON.stringify(DEFAULT_WIDGETS_CONFIG)]
+      );
+      console.log('[DB Init] Default floating_widgets_config seeded.');
+    }
   } catch (e) {
-    console.error('[DB Init Error] seedBlogs failed:', e.message);
+    console.error('[DB Init Error] floating_widgets_config seeding failed:', e.message);
   }
 
   // Ensure performance indexes on products table
