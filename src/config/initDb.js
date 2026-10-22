@@ -824,7 +824,7 @@ async function initDb() {
       featured_image  VARCHAR(500),
       category_name   VARCHAR(100) NOT NULL DEFAULT 'General',
       category_slug   VARCHAR(120) NOT NULL DEFAULT 'general',
-      author_name     VARCHAR(120) NOT NULL DEFAULT 'ToyWorld Team',
+      author_name     VARCHAR(120) NOT NULL DEFAULT 'Provoke Playtech Team',
       reading_time    VARCHAR(30) DEFAULT '5 min read',
       views_count     INT UNSIGNED DEFAULT 0,
       is_published    TINYINT(1) DEFAULT 1,

@@ -17,7 +17,7 @@ const sampleBlogs = [
     author_name: 'Aarav Sharma',
     reading_time: '6 min read',
     featured_image: 'https://images.unsplash.com/photo-1594787318286-3d835c1d207f?w=1200&q=80',
-    meta_title: 'How to Choose the Best RC Car for Kids — ToyWorld Guide',
+    meta_title: 'How to Choose the Best RC Car for Kids — Provoke Playtech Guide',
     meta_desc: 'Everything parents need to know before buying remote control vehicles: age suitability, battery life, durability, terrain, and safety tips.',
     published_at: '2026-10-10 10:00:00',
     content: `
@@ -58,7 +58,7 @@ const sampleBlogs = [
         </div>
         <div>
           <h4 class="font-bold text-gray-900">How long do batteries usually last?</h4>
-          <p class="text-sm text-gray-600">Most consumer RC cars run for 20 to 35 minutes per charge. Many ToyWorld models come with dual modular batteries so you can swap while one recharges.</p>
+          <p class="text-sm text-gray-600">Most consumer RC cars run for 20 to 35 minutes per charge. Many Provoke Playtech models come with dual modular batteries so you can swap while one recharges.</p>
         </div>
       </div>
 
@@ -75,7 +75,7 @@ const sampleBlogs = [
     author_name: 'Priya Patel',
     reading_time: '5 min read',
     featured_image: 'https://images.unsplash.com/photo-1596461404969-9ae70f2830c1?w=1200&q=80',
-    meta_title: '10 Fun & Creative Indoor Play Ideas at Home — ToyWorld',
+    meta_title: '10 Fun & Creative Indoor Play Ideas at Home — Provoke Playtech',
     meta_desc: 'Engaging, screen-free play activities to keep children entertained and learning at home using toys, crafts, and imagination.',
     published_at: '2026-10-08 14:30:00',
     content: `
@@ -113,7 +113,7 @@ const sampleBlogs = [
     author_name: 'Dr. Neha Varma',
     reading_time: '4 min read',
     featured_image: 'https://images.unsplash.com/photo-1515488042361-ee00e0ddd4e4?w=1200&q=80',
-    meta_title: 'Toy Safety Tips Every Parent Should Know — ToyWorld Safety Guide',
+    meta_title: 'Toy Safety Tips Every Parent Should Know — Provoke Playtech Safety Guide',
     meta_desc: 'Learn how to keep your children safe during playtime with expert tips on material safety, age ratings, and battery care.',
     published_at: '2026-10-05 09:15:00',
     content: `
@@ -132,24 +132,24 @@ const sampleBlogs = [
       <p>Button cell and lithium batteries present severe hazards if swallowed. Always confirm that battery doors require a Phillips screwdriver to open and inspect toys periodically for cracks or leaks.</p>
 
       <div class="bg-emerald-50 border-l-4 border-emerald-500 p-5 rounded-r-xl my-6 text-emerald-900 text-sm">
-        <strong>ToyWorld Quality Promise:</strong> Every single toy in our catalog undergoes rigorous compliance screening and material testing before it reaches our warehouse shelves.
+        <strong>Provoke Playtech Quality Promise:</strong> Every single toy in our catalog undergoes rigorous compliance screening and material testing before it reaches our warehouse shelves.
       </div>
     `
   },
   {
-    title: 'Exciting New Arrivals at ToyWorld!',
-    slug: 'exciting-new-arrivals-at-toyworld',
+    title: 'Exciting New Arrivals at Provoke Playtech!',
+    slug: 'exciting-new-arrivals-at-Provoke Playtech',
     excerpt: 'From high-speed amphibious RC racers to brain-teasing wooden 3D puzzles, discover the freshest toys curated to ignite wonder in children of all ages.',
     category_name: 'News & Updates',
     category_slug: 'news-updates',
-    author_name: 'ToyWorld Editorial',
+    author_name: 'Provoke Playtech Editorial',
     reading_time: '3 min read',
     featured_image: 'https://images.unsplash.com/photo-1566576912321-d58ddd7a6088?w=1200&q=80',
-    meta_title: 'Exciting New Arrivals at ToyWorld — Latest 2026 Drops',
-    meta_desc: 'Check out the newest toys, remote control cars, and educational kits launched this season at ToyWorld.',
+    meta_title: 'Exciting New Arrivals at Provoke Playtech — Latest 2026 Drops',
+    meta_desc: 'Check out the newest toys, remote control cars, and educational kits launched this season at Provoke Playtech.',
     published_at: '2026-10-02 11:00:00',
     content: `
-      <p class="lead text-lg text-gray-700 leading-relaxed font-medium">The ToyWorld collection just received an electrifying seasonal refresh! Our toy scouts have scoured international showcases to bring you groundbreaking gadgets, timeless handcrafted classics, and adrenaline-pumping RC vehicles.</p>
+      <p class="lead text-lg text-gray-700 leading-relaxed font-medium">The Provoke Playtech collection just received an electrifying seasonal refresh! Our toy scouts have scoured international showcases to bring you groundbreaking gadgets, timeless handcrafted classics, and adrenaline-pumping RC vehicles.</p>
 
       <h2>Highlights from the 2026 Collection</h2>
       <ul>
@@ -170,7 +170,7 @@ const sampleBlogs = [
     author_name: 'Meera Sen',
     reading_time: '5 min read',
     featured_image: 'https://images.unsplash.com/photo-1587654780291-39c9404d746b?w=1200&q=80',
-    meta_title: 'The Benefits of Educational Toys for Child Development — ToyWorld',
+    meta_title: 'The Benefits of Educational Toys for Child Development — Provoke Playtech',
     meta_desc: 'How educational toys foster cognitive growth, motor skills, social collaboration, and emotional confidence in children.',
     published_at: '2026-09-28 16:00:00',
     content: `
@@ -199,7 +199,7 @@ const sampleBlogs = [
     author_name: 'Aarav Sharma',
     reading_time: '7 min read',
     featured_image: 'https://images.unsplash.com/photo-1581235720704-06d3acfcb36f?w=1200&q=80',
-    meta_title: 'Top 5 RC Cars for 2026 — Tested & Ranked by ToyWorld',
+    meta_title: 'Top 5 RC Cars for 2026 — Tested & Ranked by Provoke Playtech',
     meta_desc: 'Comprehensive review and ranking of the 5 best RC cars for kids and hobbyists in 2026, comparing speed, battery life, durability, and value.',
     published_at: '2026-09-22 12:00:00',
     content: `

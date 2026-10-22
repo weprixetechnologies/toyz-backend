@@ -121,7 +121,7 @@ async function getBlogBySlug(req, res, next) {
     const blog = rows[0];
 
     // Atomically increment views count
-    query('UPDATE blogs SET views_count = views_count + 1 WHERE id = ?', [blog.id]).catch(() => {});
+    query('UPDATE blogs SET views_count = views_count + 1 WHERE id = ?', [blog.id]).catch(() => { });
 
     // Fetch related blogs (same category first, excluding current article)
     const relatedSql = `
@@ -168,7 +168,7 @@ async function getBlogBySlug(req, res, next) {
           LIMIT 3
         `);
       }
-    } catch (_) {}
+    } catch (_) { }
 
     res.json({
       success: true,
@@ -215,7 +215,7 @@ async function createBlogAdmin(req, res, next) {
       [
         title, slug, excerpt || null, content, featured_image || null,
         category_name || 'General', category_slug || 'general',
-        author_name || 'ToyWorld Team', reading_time || '5 min read',
+        author_name || 'Provoke Playtech Team', reading_time || '5 min read',
         is_published ? 1 : 0, meta_title || null, meta_desc || null
       ]
     );

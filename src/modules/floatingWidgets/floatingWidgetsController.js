@@ -11,9 +11,9 @@ const DEFAULT_WIDGETS_CONFIG = {
   },
   chatbot: {
     enabled: true,
-    bot_name: 'ToyWorld Assistant',
+    bot_name: 'Provoke Playtech Assistant',
     bot_subtitle: 'Online • Quick Answers',
-    welcome_message: 'Hi there! 👋 Welcome to ToyWorld. How can we help you today? Please choose an option below:',
+    welcome_message: 'Hi there! 👋 Welcome to Provoke Playtech. How can we help you today? Please choose an option below:',
     button_tooltip: 'Chat with Us',
     button_color: '#4f46e5',
     flow: [
@@ -193,7 +193,7 @@ async function updateAdminConfig(req, res, next) {
       if (redisClient && redisClient.status === 'ready') {
         await redisClient.del('settings:floating_widgets');
       }
-    } catch (_) {}
+    } catch (_) { }
 
     return res.json({
       success: true,

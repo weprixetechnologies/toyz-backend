@@ -3,7 +3,7 @@ const { query } = require('../../config/db');
 const DEFAULT_FOOTER_SETTINGS = {
   brand: {
     logo_url: '',
-    logo_text: 'ToyWorld',
+    logo_text: 'Provoke Playtech',
     about_text: 'Bringing joy to kids of all ages with premium toys, next-level RC cars, and educational games. Playtime never stops!',
     show_brand_column: true
   },
@@ -40,7 +40,7 @@ const DEFAULT_FOOTER_SETTINGS = {
       id: 'col-contact',
       heading: 'Contact Us',
       type: 'custom',
-      custom_content: 'Email: hello@toyworld.com\nPhone: +1 (800) TOY-WORLD\nAddress: 123 Playtime Avenue, Fun City, TX 75001',
+      custom_content: 'Email: hello@Provoke Playtech.com\nPhone: +1 (800) TOY-WORLD\nAddress: 123 Playtime Avenue, Fun City, TX 75001',
       links: []
     }
   ],
@@ -56,7 +56,7 @@ const DEFAULT_FOOTER_SETTINGS = {
   },
   bottom_bar: {
     enabled: true,
-    copyright_text: '© {year} ToyWorld Inc. All rights reserved.',
+    copyright_text: '© {year} Provoke Playtech Inc. All rights reserved.',
     links: [
       { id: 'bot-1', label: 'Privacy Policy', url: '/privacy', target: '_self' },
       { id: 'bot-2', label: 'Terms of Service', url: '/terms', target: '_self' }
@@ -129,7 +129,7 @@ async function updateHeaderSettings(req, res, next) {
       if (redisClient && redisClient.status === 'ready') {
         await redisClient.del('settings:header');
       }
-    } catch (_) {}
+    } catch (_) { }
 
     res.json({ success: true, message: 'Header configuration saved successfully', data: headerData });
   } catch (error) {
@@ -175,7 +175,7 @@ async function updateFooterSettings(req, res, next) {
       if (redisClient && redisClient.status === 'ready') {
         await redisClient.del('settings:footer');
       }
-    } catch (_) {}
+    } catch (_) { }
 
     res.json({ success: true, message: 'Footer configuration saved successfully', data: footerData });
   } catch (error) {

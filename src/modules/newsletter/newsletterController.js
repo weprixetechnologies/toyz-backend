@@ -25,7 +25,7 @@ async function subscribe(req, res, next) {
 
     res.json({
       success: true,
-      message: 'Thank you for subscribing to ToyWorld! Look out for exclusive deals and play tips in your inbox.'
+      message: 'Thank you for subscribing to Provoke Playtech! Look out for exclusive deals and play tips in your inbox.'
     });
   } catch (error) {
     next(error);
