@@ -97,28 +97,58 @@ const DEFAULT_WIDGETS_CONFIG = {
   }
 };
 
+const REDIS_CACHE_KEY = 'settings:floating_widgets';
+const CACHE_TTL_SECONDS = 86400; // 24 hours (invalidated immediately on admin update)
+
 /**
  * Public endpoint: GET /api/v1/floating-widgets/config
- * Highly optimized, low weight, cacheable.
+ * Highly optimized, Redis-backed for sub-millisecond response time.
  */
 async function getPublicConfig(req, res, next) {
   try {
+    res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+
+    // 1. Check Redis cache first (sub-millisecond retrieval)
+    try {
+      const redisClient = require('../../config/redis');
+      if (redisClient && redisClient.status === 'ready') {
+        const cached = await redisClient.get(REDIS_CACHE_KEY);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          res.setHeader('X-Cache', 'HIT-REDIS');
+          return res.json({ success: true, data: parsed });
+        }
+      }
+    } catch (redisErr) {
+      console.warn('[Redis] Cache read error for floating widgets:', redisErr.message);
+    }
+
+    // 2. Fetch from MySQL on cache miss or Redis offline
     const rows = await query(
       "SELECT setting_value FROM settings WHERE setting_key = 'floating_widgets_config' LIMIT 1"
     );
 
-    res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
-
+    let configData = DEFAULT_WIDGETS_CONFIG;
     if (rows && rows.length > 0 && rows[0].setting_value) {
       try {
-        const parsed = JSON.parse(rows[0].setting_value);
-        return res.json({ success: true, data: parsed });
+        configData = JSON.parse(rows[0].setting_value);
       } catch (err) {
         console.error('Failed to parse floating_widgets_config JSON:', err);
       }
     }
 
-    return res.json({ success: true, data: DEFAULT_WIDGETS_CONFIG });
+    // 3. Warm Redis cache for subsequent calls
+    try {
+      const redisClient = require('../../config/redis');
+      if (redisClient && redisClient.status === 'ready') {
+        await redisClient.setex(REDIS_CACHE_KEY, CACHE_TTL_SECONDS, JSON.stringify(configData));
+      }
+    } catch (redisErr) {
+      console.warn('[Redis] Cache write error for floating widgets:', redisErr.message);
+    }
+
+    res.setHeader('X-Cache', 'MISS');
+    return res.json({ success: true, data: configData });
   } catch (error) {
     next(error);
   }
@@ -129,6 +159,17 @@ async function getPublicConfig(req, res, next) {
  */
 async function getAdminConfig(req, res, next) {
   try {
+    // Check Redis first
+    try {
+      const redisClient = require('../../config/redis');
+      if (redisClient && redisClient.status === 'ready') {
+        const cached = await redisClient.get(REDIS_CACHE_KEY);
+        if (cached) {
+          return res.json({ success: true, data: JSON.parse(cached) });
+        }
+      }
+    } catch (_) {}
+
     const rows = await query(
       "SELECT setting_value FROM settings WHERE setting_key = 'floating_widgets_config' LIMIT 1"
     );
@@ -188,12 +229,15 @@ async function updateAdminConfig(req, res, next) {
       [jsonStr]
     );
 
+    // Warm Redis cache with the updated configuration immediately
     try {
       const redisClient = require('../../config/redis');
       if (redisClient && redisClient.status === 'ready') {
-        await redisClient.del('settings:floating_widgets');
+        await redisClient.setex(REDIS_CACHE_KEY, CACHE_TTL_SECONDS, jsonStr);
       }
-    } catch (_) { }
+    } catch (redisErr) {
+      console.warn('[Redis] Cache update error:', redisErr.message);
+    }
 
     return res.json({
       success: true,
