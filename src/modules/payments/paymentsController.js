@@ -164,6 +164,18 @@ async function verifyPayment(req, res, next) {
       [gateway_key, verification.transaction_id, order.id]
     );
 
+    // Clear cart in DB now that payment has succeeded
+    if (order.user_id) {
+      try {
+        await db.query(
+          'DELETE ci FROM cart_items ci JOIN carts c ON ci.cart_id = c.id WHERE c.user_id = ?',
+          [order.user_id]
+        );
+      } catch (cartClearErr) {
+        console.warn('[verifyPayment] Warning clearing cart after payment:', cartClearErr.message);
+      }
+    }
+
     res.json({
       success: true,
       message: 'Payment verified and order updated to paid',

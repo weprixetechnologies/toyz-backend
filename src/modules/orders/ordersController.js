@@ -266,8 +266,9 @@ async function placeOrder(req, res, next) {
       );
     }
 
-    // Clear cart items ONLY IF NOT buy now
-    if (!is_buy_now && cartId) {
+    // Clear cart items ONLY IF NOT buy now AND IF COD
+    // For online payments, cart items are kept until payment is successfully initiated / completed
+    if (!is_buy_now && cartId && isCod) {
       await connection.query('DELETE FROM cart_items WHERE cart_id = ?', [cartId]);
     }
 

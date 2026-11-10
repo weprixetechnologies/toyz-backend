@@ -139,7 +139,8 @@ async function addItem(req, res, next) {
     }
 
     const products = await query(
-      `SELECT p.id FROM products p
+      `SELECT p.id, p.name, p.stock_qty as p_stock, pv.stock_qty as pv_stock
+       FROM products p
        LEFT JOIN product_variants pv ON pv.id = ? AND pv.product_id = p.id AND pv.is_active = 1
        WHERE p.id = ? AND p.deleted_at IS NULL AND p.is_active = 1
          AND (? IS NULL OR pv.id IS NOT NULL)`,
@@ -149,12 +150,25 @@ async function addItem(req, res, next) {
       return res.status(400).json({ success: false, message: 'Product or variant is no longer available' });
     }
 
+    const availableStock = variant_id ? (products[0].pv_stock ?? 0) : (products[0].p_stock ?? 0);
+    if (availableStock <= 0) {
+      return res.status(400).json({ success: false, message: 'This product is out of stock' });
+    }
+
     const cart = await getOrCreateCart(req);
 
     const existing = await query(
       'SELECT id, qty FROM cart_items WHERE cart_id = ? AND product_id = ? AND (variant_id = ? OR (variant_id IS NULL AND ? IS NULL))',
       [cart.id, product_id, variant_id || null, variant_id || null]
     );
+
+    const currentQty = existing.length > 0 ? existing[0].qty : 0;
+    if (currentQty + qty > availableStock) {
+      return res.status(400).json({
+        success: false,
+        message: `Only ${availableStock} units in stock. You already have ${currentQty} in your cart.`
+      });
+    }
 
     if (existing.length > 0) {
       const newQty = existing[0].qty + qty;
@@ -183,6 +197,30 @@ async function updateItem(req, res, next) {
     }
 
     const cart = await getOrCreateCart(req);
+
+    const itemRows = await query(
+      `SELECT ci.id, ci.product_id, ci.variant_id, p.stock_qty as p_stock, pv.stock_qty as pv_stock
+       FROM cart_items ci
+       JOIN products p ON ci.product_id = p.id
+       LEFT JOIN product_variants pv ON ci.variant_id = pv.id
+       WHERE ci.id = ? AND ci.cart_id = ?`,
+      [id, cart.id]
+    );
+    if (itemRows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Cart item not found' });
+    }
+
+    const availableStock = itemRows[0].variant_id ? (itemRows[0].pv_stock ?? 0) : (itemRows[0].p_stock ?? 0);
+    if (availableStock <= 0) {
+      return res.status(400).json({ success: false, message: 'This item is now out of stock' });
+    }
+    if (qty > availableStock) {
+      return res.status(400).json({
+        success: false,
+        message: `Only ${availableStock} units available in stock.`
+      });
+    }
+
     await query('UPDATE cart_items SET qty = ? WHERE id = ? AND cart_id = ?', [qty, id, cart.id]);
 
     return getCart(req, res, next);
