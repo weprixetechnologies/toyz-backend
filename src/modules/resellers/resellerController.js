@@ -46,22 +46,64 @@ async function getResellerProducts(req, res, next) {
   try {
     const products = await query('SELECT * FROM products WHERE deleted_at IS NULL AND is_active = 1 AND visible_to_resellers = 1 ORDER BY id DESC');
 
+    let userSpecialDiscount = null;
+    if (req.user) {
+      const profiles = await query(
+        'SELECT has_special_price, global_discount_type, global_discount_value FROM reseller_profiles WHERE user_id = ? AND status = "approved"',
+        [req.user.id]
+      );
+      if (profiles.length > 0 && profiles[0].has_special_price && parseFloat(profiles[0].global_discount_value) > 0) {
+        userSpecialDiscount = {
+          type: profiles[0].global_discount_type,
+          value: parseFloat(profiles[0].global_discount_value)
+        };
+      }
+    }
+
     const result = [];
+    let maxComputedDiscount = 0;
+
     for (const prod of products) {
-      const priceRes = await resolvePrice({ user: req.user, product: prod, qty: 1 });
+      const priceRes = await resolvePrice({ user: req.user || null, product: prod, qty: 1 });
       const images = await query('SELECT url FROM product_images WHERE product_id = ? ORDER BY is_primary DESC, sort_order ASC LIMIT 1', [prod.id]);
+      
+      let resellerPrice = priceRes.unit_price;
+      if (!req.user || req.user.role !== 'retailer') {
+        const base = parseFloat(prod.sale_price || prod.base_price || 0);
+        resellerPrice = Math.round(base * 0.82);
+      }
+
+      const orig = parseFloat(priceRes.original_price || prod.base_price || 0);
+      const discPct = orig > resellerPrice ? Math.round(((orig - resellerPrice) / orig) * 100) : 0;
+      if (discPct > maxComputedDiscount) {
+        maxComputedDiscount = discPct;
+      }
+
       result.push({
         ...prod,
-        reseller_price: priceRes.unit_price,
+        reseller_price: resellerPrice,
         original_price: priceRes.original_price,
         discount_applied: priceRes.discount_applied,
         pricing_source: priceRes.source,
-        moq: priceRes.moq,
-        image: images.length > 0 ? images[0].url : null
+        moq: priceRes.moq || 1,
+        image: images.length > 0 ? images[0].url : null,
+        discount_percent: discPct
       });
     }
 
-    res.json({ success: true, data: { products: result } });
+    const effectivePercent =
+      userSpecialDiscount && userSpecialDiscount.type === 'percent'
+        ? userSpecialDiscount.value
+        : maxComputedDiscount;
+
+    res.json({
+      success: true,
+      data: {
+        products: result,
+        user_discount: userSpecialDiscount,
+        special_discount_percent: effectivePercent
+      }
+    });
   } catch (error) {
     next(error);
   }

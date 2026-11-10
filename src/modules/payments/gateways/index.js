@@ -1,8 +1,10 @@
 const { query } = require('../../../config/db');
 const RazorpayGateway = require('./razorpay');
+const PhonePeGateway = require('./phonepe');
 
 const REGISTRY = [
-  RazorpayGateway
+  RazorpayGateway,
+  PhonePeGateway
 ];
 
 const instances = {};

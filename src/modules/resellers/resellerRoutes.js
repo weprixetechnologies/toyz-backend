@@ -1,14 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const resellerController = require('./resellerController');
-const { authMiddleware } = require('../../middleware/auth');
+const { authMiddleware, optionalAuth } = require('../../middleware/auth');
 const roleGuard = require('../../middleware/roleGuard');
 const activityLogger = require('../../middleware/activityLogger');
 
 // Customer Application & Retailer Own Panel
 router.post('/reseller/apply', authMiddleware, resellerController.applyReseller);
 router.get('/reseller/profile', authMiddleware, roleGuard('retailer'), resellerController.getOwnProfile);
-router.get('/reseller/products', authMiddleware, roleGuard('retailer'), resellerController.getResellerProducts);
+router.get('/reseller/products', optionalAuth, resellerController.getResellerProducts);
 router.get('/reseller/orders', authMiddleware, roleGuard('retailer'), resellerController.getOwnResellerOrders);
 router.get('/reseller/proforma/:orderId', authMiddleware, roleGuard('retailer', 'admin', 'superadmin'), resellerController.getProformaInvoice);
 router.get('/reseller/credit', authMiddleware, roleGuard('retailer'), resellerController.getOwnCredit);

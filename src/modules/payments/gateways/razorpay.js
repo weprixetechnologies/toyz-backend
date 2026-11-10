@@ -56,6 +56,14 @@ class RazorpayGateway extends PaymentGateway {
     };
   }
 
+  async getRefundStatus({ refundId }) {
+    return {
+      success: true,
+      status: 'COMPLETED',
+      refund_id: refundId
+    };
+  }
+
   async handleWebhook({ headers, body }) {
     const event = body.event || 'payment.captured';
     const payload = body.payload || {};

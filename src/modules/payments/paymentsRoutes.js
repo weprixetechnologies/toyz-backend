@@ -17,5 +17,8 @@ router.post('/payments/verify', authMiddleware, paymentsController.verifyPayment
 router.get('/admin/payments/gateways', authMiddleware, roleGuard('admin', 'superadmin'), paymentsController.listAdminGateways);
 router.put('/admin/payments/gateways/:key/toggle', authMiddleware, roleGuard('superadmin'), activityLogger('payments', 'toggle_gateway'), paymentsController.toggleGateway);
 router.put('/admin/payments/cod/toggle', authMiddleware, roleGuard('superadmin'), activityLogger('payments', 'toggle_cod'), paymentsController.toggleCod);
+router.get('/admin/payments/transactions', authMiddleware, roleGuard('admin', 'superadmin'), paymentsController.listTransactions);
+router.post('/admin/payments/refund', authMiddleware, roleGuard('admin', 'superadmin'), activityLogger('payments', 'initiate_refund'), paymentsController.refundPayment);
+router.get('/admin/payments/refund/:gateway/:refundId/status', authMiddleware, roleGuard('admin', 'superadmin'), paymentsController.getRefundStatus);
 
 module.exports = router;

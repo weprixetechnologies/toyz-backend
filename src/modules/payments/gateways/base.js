@@ -14,6 +14,10 @@ class PaymentGateway {
     throw new Error('Method refund() must be implemented');
   }
 
+  async getRefundStatus({ refundId }) {
+    throw new Error('Method getRefundStatus() must be implemented');
+  }
+
   async handleWebhook({ headers, body }) {
     throw new Error('Method handleWebhook() must be implemented');
   }

@@ -41,8 +41,19 @@ const app = express();
 
 // Global Middleware
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf ? buf.toString('utf8') : '';
+  }
+}));
+app.use(express.urlencoded({
+  extended: true,
+  verify: (req, res, buf) => {
+    if (!req.rawBody && buf) {
+      req.rawBody = buf.toString('utf8');
+    }
+  }
+}));
 
 // Endpoint Request Logger Middleware
 app.use((req, res, next) => {
