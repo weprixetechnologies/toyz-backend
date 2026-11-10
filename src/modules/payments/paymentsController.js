@@ -202,7 +202,7 @@ async function handleWebhook(req, res, next) {
 
     res.json({ success: true, message: 'Webhook processed', data: webhookResult });
   } catch (error) {
-    if (error.name === 'PhonePeException' || error.statusCode === 417) {
+    if (error.name === 'PhonePeException' || error.statusCode === 417 || error.statusCode === 401) {
       return res.status(400).json({
         success: false,
         message: 'Invalid webhook credentials or callback signature',
