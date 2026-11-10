@@ -566,12 +566,16 @@ async function getInventoryLog(req, res, next) {
 async function adjustInventory(req, res, next) {
   try {
     const { id } = req.params;
-    const { variant_id, movement = 'adjustment', qty = 0, note } = req.body;
+    const { variant_id, movement, qty, change, note, reason } = req.body;
 
-    const adjustmentQty = parseInt(qty, 10);
+    const rawQty = qty !== undefined && qty !== null && qty !== 0 ? qty : (change !== undefined ? change : 0);
+    const adjustmentQty = parseInt(rawQty, 10);
     if (isNaN(adjustmentQty) || adjustmentQty === 0) {
       return res.status(400).json({ success: false, message: 'Valid non-zero quantity is required' });
     }
+
+    const resolvedMovement = movement || (adjustmentQty < 0 ? 'out' : 'in');
+    const noteText = note || reason || null;
 
     let qtyBefore = 0;
     let qtyAfter = 0;
@@ -580,13 +584,13 @@ async function adjustInventory(req, res, next) {
       const [variant] = await query('SELECT stock_qty FROM product_variants WHERE id = ? AND product_id = ?', [variant_id, id]);
       if (!variant) return res.status(404).json({ success: false, message: 'Variant not found' });
       qtyBefore = variant.stock_qty;
-      qtyAfter = movement === 'out' || movement === 'reserved' ? qtyBefore - Math.abs(adjustmentQty) : qtyBefore + adjustmentQty;
+      qtyAfter = resolvedMovement === 'out' || resolvedMovement === 'reserved' ? qtyBefore - Math.abs(adjustmentQty) : qtyBefore + Math.abs(adjustmentQty);
       await query('UPDATE product_variants SET stock_qty = ? WHERE id = ?', [qtyAfter, variant_id]);
     } else {
       const [product] = await query('SELECT stock_qty FROM products WHERE id = ?', [id]);
       if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
       qtyBefore = product.stock_qty;
-      qtyAfter = movement === 'out' || movement === 'reserved' ? qtyBefore - Math.abs(adjustmentQty) : qtyBefore + adjustmentQty;
+      qtyAfter = resolvedMovement === 'out' || resolvedMovement === 'reserved' ? qtyBefore - Math.abs(adjustmentQty) : qtyBefore + Math.abs(adjustmentQty);
       await query('UPDATE products SET stock_qty = ? WHERE id = ?', [qtyAfter, id]);
     }
 
@@ -594,7 +598,7 @@ async function adjustInventory(req, res, next) {
       `INSERT INTO inventory_log
         (product_id, variant_id, movement, qty, qty_before, qty_after, ref_type, note, performed_by)
        VALUES (?, ?, ?, ?, ?, ?, 'manual', ?, ?)`,
-      [id, variant_id || null, movement, adjustmentQty, qtyBefore, qtyAfter, note || null, req.user?.id || null]
+      [id, variant_id || null, resolvedMovement, Math.abs(adjustmentQty), qtyBefore, qtyAfter, noteText, req.user?.id || null]
     );
 
     const eventBus = require('../../events/bus');
@@ -602,7 +606,7 @@ async function adjustInventory(req, res, next) {
       product_id: parseInt(id, 10),
       variant_id: variant_id ? parseInt(variant_id, 10) : null,
       qty_after: qtyAfter,
-      movement
+      movement: resolvedMovement
     });
 
     res.json({

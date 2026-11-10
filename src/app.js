@@ -108,6 +108,7 @@ app.use('/api/v1', reviewsRoutes);
 app.use('/api/v1', resellerRoutes);
 app.use('/api/v1', bulkPricingRoutes);
 app.use('/api/v1/affiliate', affiliateRoutes);
+app.use('/api/v1', affiliateRoutes);
 app.use('/api/v1', shippingRoutes);
 app.use('/api/v1', wishlistRoutes);
 app.use('/api/v1/seo', seoRoutes);
