@@ -24,6 +24,7 @@ router.get('/admin/orders', authMiddleware, roleGuard('admin', 'superadmin', 'su
 router.get('/admin/orders/:id', authMiddleware, roleGuard('admin', 'superadmin', 'support_agent', 'inventory_manager'), ordersController.getAdminOrderDetail);
 router.get('/admin/orders/:id/packing-slip', authMiddleware, roleGuard('admin', 'superadmin', 'inventory_manager'), ordersController.downloadPackingSlip);
 router.put('/admin/orders/:id/status', authMiddleware, roleGuard('admin', 'superadmin', 'support_agent'), activityLogger('orders', 'update_order_status'), ordersController.updateOrderStatus);
+router.put('/admin/orders/:id/payment-status', authMiddleware, roleGuard('admin', 'superadmin', 'support_agent'), activityLogger('orders', 'update_payment_status'), ordersController.updatePaymentStatus);
 router.put('/admin/orders/:id/shipping', authMiddleware, roleGuard('admin', 'superadmin', 'inventory_manager'), activityLogger('orders', 'update_order_shipping'), ordersController.updateOrderShipping);
 router.post('/admin/orders/bulk-status', authMiddleware, roleGuard('admin', 'superadmin'), activityLogger('orders', 'bulk_update_status'), ordersController.bulkUpdateOrderStatus);
 

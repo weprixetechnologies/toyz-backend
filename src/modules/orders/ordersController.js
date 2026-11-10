@@ -432,6 +432,28 @@ async function updateOrderStatus(req, res, next) {
   }
 }
 
+async function updatePaymentStatus(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { payment_status } = req.body;
+    const allowed = ['pending', 'paid', 'partially_paid', 'failed', 'refunded'];
+    if (!payment_status || !allowed.includes(payment_status)) {
+      return res.status(400).json({ success: false, message: `Invalid payment status. Allowed: ${allowed.join(', ')}` });
+    }
+
+    const paidAtSql = payment_status === 'paid' ? ', paid_at = COALESCE(paid_at, NOW())' : '';
+    await query(`UPDATE orders SET payment_status = ? ${paidAtSql} WHERE id = ?`, [payment_status, id]);
+
+    res.json({
+      success: true,
+      data: { id: parseInt(id, 10), payment_status },
+      message: `Payment status updated to '${payment_status}'`
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function updateOrderShipping(req, res, next) {
   try {
     const { id } = req.params;
@@ -547,6 +569,7 @@ module.exports = {
   listAdminOrders,
   getAdminOrderDetail,
   updateOrderStatus,
+  updatePaymentStatus,
   updateOrderShipping,
   downloadInvoice,
   downloadPackingSlip,
