@@ -79,6 +79,125 @@ const DEFAULT_HEADER_SETTINGS = {
   }
 };
 
+const DEFAULT_STORE_BRAND_SETTINGS = {
+  store_name: 'Provoke Playtech',
+  store_tagline: 'Premium Toys & Next-Gen Gadgets',
+  logo_url: '',
+  gstin: '27AABCU9603R1ZM',
+  email: 'support@provokeplaytech.com',
+  phone: '+91 98765 43210',
+  address_line1: '123 Playtech Avenue',
+  address_line2: 'Industrial Area, Phase 2',
+  city: 'Mumbai',
+  state: 'Maharashtra',
+  pin_code: '400001',
+  country: 'India',
+  invoice_footer: 'Thank you for choosing Provoke Playtech! For support or returns, visit provokeplaytech.com or email support@provokeplaytech.com. This is a computer generated tax invoice.'
+};
+
+const STORE_BRAND_REDIS_KEY = 'settings:store_brand';
+const STORE_BRAND_CACHE_TTL = 86400; // 24 hours
+
+async function getStoreBrandConfig() {
+  try {
+    const redisClient = require('../../config/redis');
+    if (redisClient && redisClient.status === 'ready') {
+      const cached = await redisClient.get(STORE_BRAND_REDIS_KEY);
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    }
+  } catch (err) {
+    console.warn('[Redis] Store brand cache read error:', err.message);
+  }
+
+  try {
+    const rows = await query("SELECT setting_value FROM settings WHERE setting_key = 'store_brand_settings' LIMIT 1");
+    let config = { ...DEFAULT_STORE_BRAND_SETTINGS };
+    if (rows && rows.length > 0 && rows[0].setting_value) {
+      try {
+        const parsed = JSON.parse(rows[0].setting_value);
+        config = { ...config, ...parsed };
+      } catch (e) {
+        console.error('Failed to parse store_brand_settings JSON:', e);
+      }
+    }
+
+    try {
+      const redisClient = require('../../config/redis');
+      if (redisClient && redisClient.status === 'ready') {
+        await redisClient.setex(STORE_BRAND_REDIS_KEY, STORE_BRAND_CACHE_TTL, JSON.stringify(config));
+      }
+    } catch (_) {}
+
+    return config;
+  } catch (e) {
+    console.error('[getStoreBrandConfig] Database read error:', e.message);
+    return DEFAULT_STORE_BRAND_SETTINGS;
+  }
+}
+
+async function getStoreBrandSettings(req, res, next) {
+  try {
+    const config = await getStoreBrandConfig();
+    res.json({ success: true, data: config });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function updateStoreBrandSettings(req, res, next) {
+  try {
+    const data = req.body;
+    if (!data || typeof data !== 'object') {
+      return res.status(400).json({ success: false, message: 'Valid settings object required' });
+    }
+
+    const current = await getStoreBrandConfig();
+    const updated = {
+      store_name: String(data.store_name ?? current.store_name ?? '').trim() || DEFAULT_STORE_BRAND_SETTINGS.store_name,
+      store_tagline: String(data.store_tagline ?? current.store_tagline ?? '').trim(),
+      logo_url: String(data.logo_url ?? current.logo_url ?? '').trim(),
+      gstin: String(data.gstin ?? current.gstin ?? '').trim(),
+      email: String(data.email ?? current.email ?? '').trim(),
+      phone: String(data.phone ?? current.phone ?? '').trim(),
+      address_line1: String(data.address_line1 ?? current.address_line1 ?? '').trim(),
+      address_line2: String(data.address_line2 ?? current.address_line2 ?? '').trim(),
+      city: String(data.city ?? current.city ?? '').trim(),
+      state: String(data.state ?? current.state ?? '').trim(),
+      pin_code: String(data.pin_code ?? current.pin_code ?? '').trim(),
+      country: String(data.country ?? current.country ?? '').trim() || 'India',
+      invoice_footer: String(data.invoice_footer ?? current.invoice_footer ?? '').trim()
+    };
+
+    const jsonStr = JSON.stringify(updated);
+    await query(
+      `INSERT INTO settings (setting_key, setting_value, setting_group, description)
+       VALUES ('store_brand_settings', ?, 'general', 'Brand details, GSTIN, and Invoice footer configurations')
+       ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), setting_group = 'general'`,
+      [jsonStr]
+    );
+
+    // Warm / Update Redis cache immediately
+    try {
+      const redisClient = require('../../config/redis');
+      if (redisClient && redisClient.status === 'ready') {
+        await redisClient.setex(STORE_BRAND_REDIS_KEY, STORE_BRAND_CACHE_TTL, jsonStr);
+      }
+    } catch (redisErr) {
+      console.warn('[Redis] Store brand cache update error:', redisErr.message);
+    }
+
+    res.json({
+      success: true,
+      message: 'Store brand & invoice settings updated successfully',
+      data: updated
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function getPublicSettings(req, res, next) {
   try {
     const settings = await query("SELECT setting_key, setting_value FROM settings WHERE setting_group IN ('general', 'payment', 'shipping', 'search', 'footer')");
@@ -263,6 +382,10 @@ module.exports = {
   bulkUpdateSettings,
   updateSingleSetting,
   flushCache,
+  getStoreBrandConfig,
+  getStoreBrandSettings,
+  updateStoreBrandSettings,
   DEFAULT_HEADER_SETTINGS,
-  DEFAULT_FOOTER_SETTINGS
+  DEFAULT_FOOTER_SETTINGS,
+  DEFAULT_STORE_BRAND_SETTINGS
 };

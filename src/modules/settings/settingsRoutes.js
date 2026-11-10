@@ -9,12 +9,15 @@ const activityLogger = require('../../middleware/activityLogger');
 router.get('/settings', settingsController.getPublicSettings);
 router.get('/header', settingsController.getHeaderSettings);
 router.get('/footer', settingsController.getFooterSettings);
+router.get('/settings/store-brand', settingsController.getStoreBrandSettings);
 
 // Admin settings
 router.get('/admin/header', authMiddleware, roleGuard('admin', 'superadmin'), settingsController.getHeaderSettings);
 router.put('/admin/header', authMiddleware, roleGuard('admin', 'superadmin'), activityLogger('settings', 'update_header'), settingsController.updateHeaderSettings);
 router.get('/admin/footer', authMiddleware, roleGuard('admin', 'superadmin'), settingsController.getFooterSettings);
 router.put('/admin/footer', authMiddleware, roleGuard('admin', 'superadmin'), activityLogger('settings', 'update_footer'), settingsController.updateFooterSettings);
+router.get('/admin/settings/store-brand', authMiddleware, roleGuard('admin', 'superadmin'), settingsController.getStoreBrandSettings);
+router.put('/admin/settings/store-brand', authMiddleware, roleGuard('admin', 'superadmin'), activityLogger('settings', 'update_store_brand'), settingsController.updateStoreBrandSettings);
 router.get('/admin/settings', authMiddleware, roleGuard('admin', 'superadmin'), settingsController.getAllSettings);
 router.put('/admin/settings', authMiddleware, roleGuard('admin', 'superadmin'), activityLogger('settings', 'bulk_update_settings'), settingsController.bulkUpdateSettings);
 router.put('/admin/settings/:key', authMiddleware, roleGuard('admin', 'superadmin'), activityLogger('settings', 'update_single_setting'), settingsController.updateSingleSetting);

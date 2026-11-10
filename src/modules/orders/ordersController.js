@@ -488,22 +488,27 @@ async function updateOrderShipping(req, res, next) {
 async function downloadInvoice(req, res, next) {
   try {
     const { id } = req.params;
-    const orders = await query('SELECT * FROM orders WHERE id = ? AND (user_id = ? OR ? IN ("admin","superadmin","support_agent"))', [id, req.user.id, req.user.role]);
+    const orders = await query(
+      'SELECT * FROM orders WHERE id = ? AND (user_id = ? OR ? IN ("admin","superadmin","support_agent","inventory_manager"))',
+      [id, req.user.id, req.user.role]
+    );
     if (orders.length === 0) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
     const order = orders[0];
     const items = await query('SELECT * FROM order_items WHERE order_id = ?', [id]);
-    const settingsList = await query('SELECT setting_key, setting_value FROM settings');
-    const settings = {};
-    settingsList.forEach((s) => settings[s.setting_key] = s.setting_value);
 
-    const { generateInvoiceHtml } = require('../../utils/invoicePdf');
-    const html = generateInvoiceHtml(order, items, settings);
+    const { getStoreBrandConfig } = require('../settings/settingsController');
+    const storeBrand = await getStoreBrandConfig();
 
-    res.setHeader('Content-Type', 'text/html');
-    res.send(html);
+    const { generateInvoicePdf } = require('../../utils/invoicePdf');
+    const pdfBuffer = await generateInvoicePdf(order, items, storeBrand);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="Invoice-${order.order_number || id}.pdf"`);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    res.send(pdfBuffer);
   } catch (error) {
     next(error);
   }
@@ -519,15 +524,17 @@ async function downloadPackingSlip(req, res, next) {
 
     const order = orders[0];
     const items = await query('SELECT * FROM order_items WHERE order_id = ?', [id]);
-    const settingsList = await query('SELECT setting_key, setting_value FROM settings');
-    const settings = {};
-    settingsList.forEach((s) => settings[s.setting_key] = s.setting_value);
 
-    const { generatePackingSlipHtml } = require('../../utils/invoicePdf');
-    const html = generatePackingSlipHtml(order, items, settings);
+    const { getStoreBrandConfig } = require('../settings/settingsController');
+    const storeBrand = await getStoreBrandConfig();
 
-    res.setHeader('Content-Type', 'text/html');
-    res.send(html);
+    const { generatePackingSlipPdf } = require('../../utils/invoicePdf');
+    const pdfBuffer = await generatePackingSlipPdf(order, items, storeBrand);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="PackingSlip-${order.order_number || id}.pdf"`);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    res.send(pdfBuffer);
   } catch (error) {
     next(error);
   }
