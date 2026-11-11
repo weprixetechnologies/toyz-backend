@@ -1,5 +1,6 @@
 const db = require('../../config/db');
 const { getGateway, getRegisteredGateways } = require('./gateways');
+const { bumpOrdersVersion } = require('../../cache/orderCache');
 
 async function getPaymentMethods(req, res, next) {
   try {
@@ -163,6 +164,7 @@ async function verifyPayment(req, res, next) {
       "UPDATE orders SET payment_status = 'paid', payment_gateway = ?, payment_ref = ?, paid_at = NOW() WHERE id = ?",
       [gateway_key, verification.transaction_id, order.id]
     );
+    await bumpOrdersVersion();
 
     // Clear cart in DB now that payment has succeeded
     if (order.user_id) {

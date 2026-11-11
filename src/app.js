@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const zlib = require('zlib');
 const errorHandler = require('./middleware/errorHandler');
 const initEventListeners = require('./events/listeners');
 
@@ -41,6 +42,32 @@ const app = express();
 
 // Global Middleware
 app.use(cors({ origin: true, credentials: true }));
+
+// Lightweight Gzip compression for JSON responses >= 1KB
+app.use((req, res, next) => {
+  const acceptEncoding = req.headers['accept-encoding'] || '';
+  if (!acceptEncoding.includes('gzip')) return next();
+
+  const originalJson = res.json.bind(res);
+  res.json = (body) => {
+    const jsonStr = JSON.stringify(body);
+    if (!jsonStr || Buffer.byteLength(jsonStr) < 1024 || res.headersSent) {
+      return originalJson(body);
+    }
+    zlib.gzip(jsonStr, (err, compressed) => {
+      if (err || res.headersSent) {
+        return originalJson(body);
+      }
+      res.setHeader('Content-Encoding', 'gzip');
+      res.setHeader('Vary', 'Accept-Encoding');
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Length', compressed.length);
+      res.end(compressed);
+    });
+    return res;
+  };
+  next();
+});
 app.use(express.json({
   verify: (req, res, buf) => {
     req.rawBody = buf ? buf.toString('utf8') : '';

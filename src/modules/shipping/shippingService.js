@@ -1,5 +1,6 @@
 const db = require('../../config/db');
 const bus = require('../../events/bus');
+const { bumpOrdersVersion } = require('../../cache/orderCache');
 
 class ShippingService {
   /**
@@ -192,10 +193,17 @@ class ShippingService {
 
     const carrierName = carrier || tracking_carrier || 'Standard Courier';
 
-    const orders = await db.query('SELECT * FROM orders WHERE id = ?', [orderId]);
+    const [orders, allOrderItems] = await Promise.all([
+      db.query('SELECT * FROM orders WHERE id = ?', [orderId]),
+      db.query('SELECT * FROM order_items WHERE order_id = ?', [orderId])
+    ]);
     if (!orders || orders.length === 0) {
       throw new Error('Order not found.');
     }
+
+    // Build O(1) lookup Map for order items
+    const itemById = new Map(allOrderItems.map((item) => [String(item.id), item]));
+    const normalizedItems = [];
 
     for (const itemInput of items) {
       const order_item_id = itemInput.order_item_id || itemInput.id;
@@ -203,12 +211,11 @@ class ShippingService {
         ? parseInt(itemInput.qty, 10)
         : (itemInput.qty_shipped !== undefined && itemInput.qty_shipped !== null ? parseInt(itemInput.qty_shipped, 10) : 1);
 
-      const orderItems = await db.query('SELECT * FROM order_items WHERE id = ? AND order_id = ?', [order_item_id, orderId]);
-      if (!orderItems || orderItems.length === 0) {
+      const item = itemById.get(String(order_item_id));
+      if (!item) {
         throw new Error(`Order item #${order_item_id} does not belong to order #${orderId}`);
       }
 
-      const item = orderItems[0];
       if (item.status === 'rejected') {
         throw new Error(`Item #${order_item_id} (${item.product_name || item.title}) was rejected and cannot be shipped.`);
       }
@@ -220,6 +227,7 @@ class ShippingService {
       if (qty > remainingUnshipped) {
         throw new Error(`Cannot ship ${qty} units of item #${order_item_id}. Only ${remainingUnshipped} accepted units remaining unshipped.`);
       }
+      normalizedItems.push({ order_item_id, qty });
     }
 
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -235,27 +243,23 @@ class ShippingService {
 
     const shipmentId = shipmentResult.insertId;
 
-    // Process each item
-    for (const itemInput of items) {
-      const order_item_id = itemInput.order_item_id || itemInput.id;
-      const qty = itemInput.qty !== undefined && itemInput.qty !== null
-        ? parseInt(itemInput.qty, 10)
-        : (itemInput.qty_shipped !== undefined && itemInput.qty_shipped !== null ? parseInt(itemInput.qty_shipped, 10) : 1);
+    // Bulk-insert shipment_items + update order_items in parallel
+    const shipmentValuesSql = normalizedItems.map(() => '(?, ?, ?)').join(', ');
+    const shipmentValuesParams = normalizedItems.flatMap((it) => [shipmentId, it.order_item_id, it.qty]);
 
-      await db.query(
-        `INSERT INTO shipment_items (shipment_id, order_item_id, qty)
-         VALUES (?, ?, ?)`,
-        [shipmentId, order_item_id, qty]
-      );
+    await Promise.all([
+      db.query(
+        `INSERT INTO shipment_items (shipment_id, order_item_id, qty) VALUES ${shipmentValuesSql}`,
+        shipmentValuesParams
+      ),
+      ...normalizedItems.map((it) =>
+        db.query('UPDATE order_items SET qty_shipped = qty_shipped + ? WHERE id = ?', [it.qty, it.order_item_id])
+      )
+    ]);
 
-      await db.query(
-        `UPDATE order_items SET qty_shipped = qty_shipped + ? WHERE id = ?`,
-        [qty, order_item_id]
-      );
-    }
-
-    // Recompute order shipment status
+    // Recompute order shipment status and invalidate orders cache
     const updatedOrderStatus = await this.computeOrderShipmentStatus(orderId);
+    await bumpOrdersVersion();
 
     const shipments = await db.query('SELECT * FROM shipments WHERE id = ?', [shipmentId]);
     const shipmentItems = await db.query(
@@ -286,30 +290,45 @@ class ShippingService {
       [carrier, tracking_number, status, shipmentId]
     );
 
+    await bumpOrdersVersion();
     const shipments = await db.query('SELECT * FROM shipments WHERE id = ?', [shipmentId]);
     return shipments[0] || null;
   }
 
   /**
-   * Get shipments for an order
+   * Get shipments for an order (single parallel batch + O(M) Hash Map grouping)
    */
   async getOrderShipments(orderId) {
-    const shipments = await db.query('SELECT * FROM shipments WHERE order_id = ? ORDER BY id ASC', [orderId]);
-    for (const s of (shipments || [])) {
-      const sItems = await db.query(
+    const [shipments, allShipmentItems, rejectedItems] = await Promise.all([
+      db.query('SELECT * FROM shipments WHERE order_id = ? ORDER BY id ASC', [orderId]),
+      db.query(
         `SELECT si.*, oi.product_name, oi.sku, oi.unit_price AS price
          FROM shipment_items si
-         JOIN order_items oi ON si.order_item_id = oi.id
-         WHERE si.shipment_id = ?`,
-        [s.id]
-      );
-      s.items = sItems || [];
+         INNER JOIN shipments s ON si.shipment_id = s.id
+         INNER JOIN order_items oi ON si.order_item_id = oi.id
+         WHERE s.order_id = ?
+         ORDER BY si.id ASC`,
+        [orderId]
+      ),
+      db.query(
+        `SELECT * FROM order_items WHERE order_id = ? AND status = 'rejected'`,
+        [orderId]
+      )
+    ]);
+
+    const itemsByShipment = new Map();
+    for (const si of (allShipmentItems || [])) {
+      let list = itemsByShipment.get(si.shipment_id);
+      if (!list) {
+        list = [];
+        itemsByShipment.set(si.shipment_id, list);
+      }
+      list.push(si);
     }
 
-    const rejectedItems = await db.query(
-      `SELECT * FROM order_items WHERE order_id = ? AND status = 'rejected'`,
-      [orderId]
-    );
+    for (const s of (shipments || [])) {
+      s.items = itemsByShipment.get(s.id) || [];
+    }
 
     return {
       shipments: shipments || [],

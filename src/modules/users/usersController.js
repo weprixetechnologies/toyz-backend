@@ -1,5 +1,6 @@
 const bcrypt = require('bcryptjs');
 const { query } = require('../../config/db');
+const { invalidateUserAuthCache } = require('../../middleware/auth');
 
 async function listUsers(req, res, next) {
   try {
@@ -150,6 +151,7 @@ async function updateUser(req, res, next) {
       }
     }
 
+    invalidateUserAuthCache(id);
     res.json({ success: true, message: 'User updated successfully' });
   } catch (error) {
     next(error);
@@ -160,6 +162,7 @@ async function deleteUser(req, res, next) {
   try {
     const { id } = req.params;
     await query('UPDATE users SET deleted_at = NOW() WHERE id = ?', [id]);
+    invalidateUserAuthCache(id);
     res.json({ success: true, message: 'User soft-deleted successfully' });
   } catch (error) {
     next(error);
@@ -170,6 +173,7 @@ async function banUser(req, res, next) {
   try {
     const { id } = req.params;
     await query("UPDATE users SET status = 'banned' WHERE id = ?", [id]);
+    invalidateUserAuthCache(id);
     res.json({ success: true, message: 'User banned successfully' });
   } catch (error) {
     next(error);
@@ -191,6 +195,7 @@ async function updateOwnProfile(req, res, next) {
       `UPDATE users SET name = COALESCE(?, name), phone = COALESCE(?, phone), gstin = COALESCE(?, gstin), avatar = COALESCE(?, avatar) WHERE id = ?`,
       [name, phone, gstin, avatar, req.user.id]
     );
+    invalidateUserAuthCache(req.user.id);
     res.json({ success: true, message: 'Profile updated successfully' });
   } catch (error) {
     next(error);

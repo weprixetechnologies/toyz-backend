@@ -312,7 +312,11 @@ async function initDb() {
       FOREIGN KEY (user_id) REFERENCES users(id),
       FOREIGN KEY (affiliate_id) REFERENCES users(id) ON DELETE SET NULL,
       INDEX idx_user      (user_id),
+      INDEX idx_user_id   (user_id, id),
       INDEX idx_status    (status),
+      INDEX idx_status_id (status, id),
+      INDEX idx_role_status_id (placed_by_role, status, id),
+      INDEX idx_payment_status_id (payment_status, id),
       INDEX idx_number    (order_number),
       INDEX idx_placed_at (created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
@@ -952,11 +956,16 @@ async function initDb() {
     console.error('[DB Init Error] floating_widgets_config seeding failed:', e.message);
   }
 
-  // Ensure performance indexes on products table
+  // Ensure performance indexes on products, orders, and product_images tables
   const ensureIndexes = [
     { name: 'idx_status_active', table: 'products', cols: '(is_active, deleted_at)' },
     { name: 'idx_price', table: 'products', cols: '(sale_price, base_price)' },
-    { name: 'idx_created_at', table: 'products', cols: '(created_at)' }
+    { name: 'idx_created_at', table: 'products', cols: '(created_at)' },
+    { name: 'idx_status_id', table: 'orders', cols: '(status, id)' },
+    { name: 'idx_role_status_id', table: 'orders', cols: '(placed_by_role, status, id)' },
+    { name: 'idx_user_id', table: 'orders', cols: '(user_id, id)' },
+    { name: 'idx_payment_status_id', table: 'orders', cols: '(payment_status, id)' },
+    { name: 'idx_product_primary_img', table: 'product_images', cols: '(product_id, is_primary, sort_order)' }
   ];
   for (const idx of ensureIndexes) {
     try {

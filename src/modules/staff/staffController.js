@@ -1,5 +1,6 @@
 const { query } = require('../../config/db');
 const bcrypt = require('bcryptjs');
+const { invalidateUserAuthCache } = require('../../middleware/auth');
 
 class StaffController {
   /**
@@ -126,6 +127,7 @@ class StaffController {
 
       const user = updated[0];
       user.permissions = user.permissions ? (typeof user.permissions === 'string' ? JSON.parse(user.permissions) : user.permissions) : null;
+      invalidateUserAuthCache(staffUserId);
 
       res.json({
         success: true,
@@ -144,6 +146,7 @@ class StaffController {
     try {
       const staffUserId = req.params.id;
       await query('UPDATE users SET deleted_at = NOW(), status = "inactive" WHERE id = ?', [staffUserId]);
+      invalidateUserAuthCache(staffUserId);
       res.json({
         success: true,
         data: { id: staffUserId },

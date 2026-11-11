@@ -1,6 +1,7 @@
 const { query } = require('../../config/db');
 const { resolvePrice } = require('../../utils/priceResolver');
 const eventBus = require('../../events/bus');
+const { invalidateUserAuthCache } = require('../../middleware/auth');
 
 async function applyReseller(req, res, next) {
   try {
@@ -212,6 +213,7 @@ async function approveReseller(req, res, next) {
 
     // Upgrade user role to retailer
     await query("UPDATE users SET role = 'retailer' WHERE id = ?", [reseller.user_id]);
+    invalidateUserAuthCache(reseller.user_id);
 
     // Update reseller profile
     await query(
@@ -253,6 +255,7 @@ async function suspendReseller(req, res, next) {
     const resellers = await query('SELECT user_id FROM reseller_profiles WHERE id = ?', [id]);
     if (resellers.length > 0) {
       await query("UPDATE users SET role = 'customer' WHERE id = ?", [resellers[0].user_id]);
+      invalidateUserAuthCache(resellers[0].user_id);
     }
     await query("UPDATE reseller_profiles SET status = 'suspended' WHERE id = ?", [id]);
     res.json({ success: true, message: 'Reseller account suspended' });

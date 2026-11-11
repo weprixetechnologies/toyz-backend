@@ -2,6 +2,7 @@ const PaymentGateway = require('./base');
 const db = require('../../../config/db');
 const redisClient = require('../../../config/redis');
 const eventBus = require('../../../events/bus');
+const { bumpOrdersVersion } = require('../../../cache/orderCache');
 const {
   generateBase64Payload,
   decodeBase64Payload,
@@ -482,6 +483,7 @@ class PhonePeGateway extends PaymentGateway {
         "UPDATE orders SET payment_status = 'paid', payment_gateway = ?, payment_ref = ?, paid_at = NOW() WHERE id = ?",
         [PhonePeGateway.keyName, merchantTransactionId, order.id]
       );
+      await bumpOrdersVersion();
 
       // Clear cart in DB now that payment has succeeded
       if (order.user_id) {
@@ -527,6 +529,7 @@ class PhonePeGateway extends PaymentGateway {
 
       if (order.payment_status === 'pending') {
         await db.query("UPDATE orders SET payment_status = 'failed' WHERE id = ?", [order.id]);
+        await bumpOrdersVersion();
       }
 
       return {
@@ -575,6 +578,7 @@ class PhonePeGateway extends PaymentGateway {
           "UPDATE orders SET payment_status = 'refunded', status = 'refunded' WHERE id = ?",
           [txRows[0].order_id]
         );
+        await bumpOrdersVersion();
       }
 
       return {
@@ -715,6 +719,7 @@ class PhonePeGateway extends PaymentGateway {
         "UPDATE orders SET payment_status = 'refunded', status = 'refunded' WHERE id = ?",
         [order.id]
       );
+      await bumpOrdersVersion();
     }
 
     if (!refundResponse.success && !isPending) {
@@ -797,6 +802,7 @@ class PhonePeGateway extends PaymentGateway {
             "UPDATE orders SET payment_status = 'refunded', status = 'refunded' WHERE id = ?",
             [txRows[0].order_id]
           );
+          await bumpOrdersVersion();
         }
       }
     } catch (dbErr) {

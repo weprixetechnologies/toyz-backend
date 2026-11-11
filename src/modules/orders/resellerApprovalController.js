@@ -1,17 +1,23 @@
 const { query, pool } = require('../../config/db');
 const eventBus = require('../../events/bus');
+const { getOrSetOrderCache, bumpOrdersVersion } = require('../../cache/orderCache');
 
 async function listPendingResellerOrders(req, res, next) {
   try {
-    const orders = await query(
-      `SELECT o.*, u.name as reseller_name, u.email as reseller_email, u.phone as reseller_phone
-       FROM orders o
-       JOIN users u ON o.user_id = u.id
-       WHERE o.status = 'pending_approval' AND o.placed_by_role = 'retailer'
-       ORDER BY o.id DESC`
-    );
+    const data = await getOrSetOrderCache('reseller_pending', async () => {
+      const orders = await query(
+        `SELECT o.id, o.order_number, o.user_id, o.placed_by_role, o.status,
+                o.shipping_name, o.grand_total, o.created_at,
+                u.name as reseller_name, u.email as reseller_email, u.phone as reseller_phone
+         FROM orders o
+         JOIN users u ON o.user_id = u.id
+         WHERE o.placed_by_role = 'retailer' AND o.status = 'pending_approval'
+         ORDER BY o.id DESC`
+      );
+      return { orders };
+    });
 
-    res.json({ success: true, data: { orders } });
+    res.json({ success: true, data });
   } catch (error) {
     next(error);
   }
@@ -40,8 +46,10 @@ async function approveResellerOrder(req, res, next) {
       return res.status(409).json({ success: false, message: 'Only pending retailer orders can be approved.' });
     }
     const [allOrderItems] = await connection.query('SELECT * FROM order_items WHERE order_id = ?', [id]);
-    const inputIds = new Set(items.map(item => String(item.id)));
-    if (allOrderItems.some(item => !inputIds.has(String(item.id)))) {
+    // Build O(1) lookup Map by item ID instead of querying per-item inside the loop
+    const orderItemMap = new Map(allOrderItems.map((item) => [String(item.id), item]));
+    const inputIds = new Set(items.map((item) => String(item.id)));
+    if (allOrderItems.some((item) => !inputIds.has(String(item.id)))) {
       connection.release();
       return res.status(400).json({ success: false, message: 'Approval decisions are required for every order item.' });
     }
@@ -52,10 +60,8 @@ async function approveResellerOrder(req, res, next) {
     const itemSummaryParts = [];
 
     for (const itemInput of items) {
-      const [orderItems] = await connection.query('SELECT * FROM order_items WHERE id = ? AND order_id = ?', [itemInput.id, id]);
-      if (orderItems.length === 0) continue;
-
-      const orderItem = orderItems[0];
+      const orderItem = orderItemMap.get(String(itemInput.id));
+      if (!orderItem) continue;
       const qtyRequested = orderItem.qty_ordered;
       const requestedApproved = parseInt(itemInput.qty_approved, 10);
       if (!Number.isInteger(requestedApproved) || requestedApproved < 0 || requestedApproved > qtyRequested) {
@@ -128,6 +134,7 @@ async function approveResellerOrder(req, res, next) {
     );
     await connection.commit();
     connection.release();
+    await bumpOrdersVersion();
 
     const [users] = await query('SELECT name, phone FROM users WHERE id = ?', [order.user_id]);
     const user = users[0] || {};
@@ -226,6 +233,7 @@ async function updateAdminOrderItem(req, res, next) {
     const newGrandTotal = newSubtotal + shippingCost;
 
     await query('UPDATE orders SET subtotal = ?, discount_amount = 0, coupon_code = NULL, coupon_discount = 0, grand_total = ? WHERE id = ?', [newSubtotal, newGrandTotal, id]);
+    await bumpOrdersVersion();
 
     res.json({
       success: true,

@@ -1,6 +1,39 @@
 const jwt = require('jsonwebtoken');
 const jwtConfig = require('../config/jwt');
 const { query } = require('../config/db');
+const LRUCache = require('../cache/lruCache');
+
+// O(1) bounded LRU cache for authenticated user records (avoids a DB round-trip on every request)
+const userAuthCache = new LRUCache(1000, 30000);
+
+function invalidateUserAuthCache(userId) {
+  if (userId !== undefined && userId !== null) {
+    userAuthCache.delete(String(userId));
+  }
+}
+
+async function fetchActiveUser(userId) {
+  const cacheKey = String(userId);
+  const cached = userAuthCache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  return userAuthCache.singleFlight(`auth:${cacheKey}`, async () => {
+    const retry = userAuthCache.get(cacheKey);
+    if (retry !== undefined) return retry;
+
+    const users = await query(
+      'SELECT id, name, email, phone, role, status, gstin, referral_code, affiliate_id, segment_tags FROM users WHERE id = ? AND deleted_at IS NULL',
+      [userId]
+    );
+    const user = users && users.length > 0 ? users[0] : null;
+    if (user) {
+      userAuthCache.set(cacheKey, user, 30000);
+    }
+    return user;
+  });
+}
 
 async function authMiddleware(req, res, next) {
   try {
@@ -22,16 +55,12 @@ async function authMiddleware(req, res, next) {
       return res.status(401).json({ success: false, message: 'Invalid or expired access token' });
     }
 
-    const users = await query(
-      'SELECT id, name, email, phone, role, status, gstin, referral_code, affiliate_id, segment_tags FROM users WHERE id = ? AND deleted_at IS NULL',
-      [decoded.id]
-    );
+    const user = await fetchActiveUser(decoded.id);
 
-    if (!users || users.length === 0) {
+    if (!user) {
       return res.status(401).json({ success: false, message: 'User account not found' });
     }
 
-    const user = users[0];
     if (user.status === 'banned') {
       return res.status(403).json({ success: false, message: 'Account has been banned' });
     }
@@ -53,9 +82,9 @@ async function optionalAuth(req, res, next) {
       const token = authHeader.split(' ')[1];
       try {
         const decoded = jwt.verify(token, jwtConfig.secret);
-        const users = await query('SELECT id, name, email, phone, role, status FROM users WHERE id = ? AND deleted_at IS NULL', [decoded.id]);
-        if (users && users.length > 0 && users[0].status === 'active') {
-          req.user = users[0];
+        const user = await fetchActiveUser(decoded.id);
+        if (user && user.status === 'active') {
+          req.user = user;
         }
       } catch (err) {
         // Ignore token errors for optional auth
@@ -69,5 +98,6 @@ async function optionalAuth(req, res, next) {
 
 module.exports = {
   authMiddleware,
-  optionalAuth
+  optionalAuth,
+  invalidateUserAuthCache
 };

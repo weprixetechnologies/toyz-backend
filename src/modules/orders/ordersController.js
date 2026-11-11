@@ -1,6 +1,7 @@
 const { getProductMoq, resolvePrice, isApprovedRetailer } = require('../../utils/priceResolver');
 const { query, pool } = require('../../config/db');
 const eventBus = require('../../events/bus');
+const { getOrSetOrderCache, bumpOrdersVersion } = require('../../cache/orderCache');
 
 async function placeOrder(req, res, next) {
   const connection = await pool.getConnection();
@@ -274,6 +275,7 @@ async function placeOrder(req, res, next) {
 
     await connection.commit();
     connection.release();
+    await bumpOrdersVersion();
 
     const orderData = {
       id: orderId,
@@ -306,35 +308,177 @@ async function placeOrder(req, res, next) {
 
 async function listOwnOrders(req, res, next) {
   try {
-    const orders = await query('SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC', [req.user.id]);
-    for (const order of orders) {
-      const items = await query(
-        `SELECT oi.*, p.slug, 
-          (SELECT url FROM product_images WHERE product_id = p.id ORDER BY is_primary DESC LIMIT 1) as product_image
+    const userId = req.user.id;
+    const data = await getOrSetOrderCache(`own_list:${userId}`, async () => {
+      const orders = await query(
+        `SELECT id, order_number, user_id, placed_by_role, status, payment_status, payment_method,
+                is_cod, shipping_name, subtotal, discount_amount, coupon_discount, shipping_cost,
+                tax_amount, grand_total, created_at
+         FROM orders
+         WHERE user_id = ?
+         ORDER BY id DESC`,
+        [userId]
+      );
+
+      if (!orders || orders.length === 0) {
+        return { orders: [] };
+      }
+
+      // Single batched query for all order items across all orders (eliminates N+1)
+      const orderIds = orders.map((o) => o.id);
+      const orderPlaceholders = orderIds.map(() => '?').join(',');
+      const allItems = await query(
+        `SELECT oi.id, oi.order_id, oi.product_id, oi.variant_id, oi.product_name, oi.variant_label,
+                oi.sku, oi.qty_ordered, oi.qty_approved, oi.qty_rejected, oi.qty_shipped,
+                oi.unit_price, oi.admin_unit_price, oi.line_total, oi.status, p.slug
          FROM order_items oi
          LEFT JOIN products p ON oi.product_id = p.id
-         WHERE oi.order_id = ?`, 
-        [order.id]
+         WHERE oi.order_id IN (${orderPlaceholders})
+         ORDER BY oi.id ASC`,
+        orderIds
       );
-      order.items = items || [];
-    }
-    res.json({ success: true, data: { orders } });
+
+      // Deduplicate product IDs via Set and batch-fetch primary images in 1 query
+      const productIdSet = new Set();
+      for (const item of allItems) {
+        if (item.product_id) productIdSet.add(item.product_id);
+      }
+
+      const primaryImageMap = new Map();
+      if (productIdSet.size > 0) {
+        const productIds = Array.from(productIdSet);
+        const imgPlaceholders = productIds.map(() => '?').join(',');
+        const images = await query(
+          `SELECT product_id, url
+           FROM product_images
+           WHERE product_id IN (${imgPlaceholders})
+           ORDER BY is_primary DESC, sort_order ASC, id ASC`,
+          productIds
+        );
+        for (const img of images) {
+          if (!primaryImageMap.has(img.product_id)) {
+            primaryImageMap.set(img.product_id, img.url);
+          }
+        }
+      }
+
+      // Group items by order_id in O(M) using a Map
+      const itemsByOrderId = new Map();
+      for (const item of allItems) {
+        item.product_image = primaryImageMap.get(item.product_id) || null;
+        let list = itemsByOrderId.get(item.order_id);
+        if (!list) {
+          list = [];
+          itemsByOrderId.set(item.order_id, list);
+        }
+        list.push(item);
+      }
+
+      for (const order of orders) {
+        order.items = itemsByOrderId.get(order.id) || [];
+      }
+
+      return { orders };
+    });
+
+    res.json({ success: true, data });
   } catch (error) {
     next(error);
   }
 }
 
-async function fetchOrderShipments(orderId) {
-  const shipments = await query('SELECT * FROM shipments WHERE order_id = ? ORDER BY id ASC', [orderId]);
+/**
+ * Fetches order, items, shipments, and shipment items in a single parallel batch,
+ * then groups via Hash Maps in O(I + S + M) time (zero N+1 queries).
+ */
+async function fetchOrderDetailBundle(orderId, userId = null) {
+  const orderSql = userId !== null
+    ? 'SELECT * FROM orders WHERE id = ? AND user_id = ?'
+    : 'SELECT * FROM orders WHERE id = ?';
+  const orderParams = userId !== null ? [orderId, userId] : [orderId];
+
+  const [orders, items, shipments, allShipmentItems] = await Promise.all([
+    query(orderSql, orderParams),
+    query('SELECT * FROM order_items WHERE order_id = ? ORDER BY id ASC', [orderId]),
+    query('SELECT * FROM shipments WHERE order_id = ? ORDER BY id ASC', [orderId]),
+    query(
+      `SELECT si.*
+       FROM shipment_items si
+       INNER JOIN shipments s ON si.shipment_id = s.id
+       WHERE s.order_id = ?
+       ORDER BY si.id ASC`,
+      [orderId]
+    )
+  ]);
+
+  if (!orders || orders.length === 0) {
+    return null;
+  }
+
+  const itemById = new Map();
+  const rejectedItems = [];
+  for (const item of items) {
+    itemById.set(item.id, item);
+    if (item.status === 'rejected') {
+      rejectedItems.push(item);
+    }
+  }
+
+  const shipmentItemsMap = new Map();
+  for (const si of allShipmentItems) {
+    const orderItem = itemById.get(si.order_item_id);
+    const enriched = {
+      ...si,
+      product_name: orderItem?.product_name || null,
+      sku: orderItem?.sku || null
+    };
+    let list = shipmentItemsMap.get(si.shipment_id);
+    if (!list) {
+      list = [];
+      shipmentItemsMap.set(si.shipment_id, list);
+    }
+    list.push(enriched);
+  }
+
   for (const s of shipments) {
-    const sItems = await query(
+    s.items = shipmentItemsMap.get(s.id) || [];
+    s.tracking_carrier = s.carrier || s.tracking_carrier || 'Express Logistics';
+  }
+
+  return {
+    order: orders[0],
+    items,
+    shipments,
+    rejected_items: rejectedItems
+  };
+}
+
+async function fetchOrderShipments(orderId) {
+  const [shipments, allShipmentItems] = await Promise.all([
+    query('SELECT * FROM shipments WHERE order_id = ? ORDER BY id ASC', [orderId]),
+    query(
       `SELECT si.*, oi.product_name, oi.sku
        FROM shipment_items si
-       JOIN order_items oi ON si.order_item_id = oi.id
-       WHERE si.shipment_id = ?`,
-      [s.id]
-    );
-    s.items = sItems || [];
+       INNER JOIN shipments s ON si.shipment_id = s.id
+       INNER JOIN order_items oi ON si.order_item_id = oi.id
+       WHERE s.order_id = ?
+       ORDER BY si.id ASC`,
+      [orderId]
+    )
+  ]);
+
+  const shipmentItemsMap = new Map();
+  for (const si of allShipmentItems) {
+    let list = shipmentItemsMap.get(si.shipment_id);
+    if (!list) {
+      list = [];
+      shipmentItemsMap.set(si.shipment_id, list);
+    }
+    list.push(si);
+  }
+
+  for (const s of shipments) {
+    s.items = shipmentItemsMap.get(s.id) || [];
     s.tracking_carrier = s.carrier || s.tracking_carrier || 'Express Logistics';
   }
   return shipments || [];
@@ -343,13 +487,14 @@ async function fetchOrderShipments(orderId) {
 async function getOwnOrderDetail(req, res, next) {
   try {
     const { id } = req.params;
-    const orders = await query('SELECT * FROM orders WHERE id = ? AND user_id = ?', [id, req.user.id]);
-    if (orders.length === 0) {
+    const userId = req.user.id;
+    const data = await getOrSetOrderCache(`own_detail:${userId}:${id}`, () =>
+      fetchOrderDetailBundle(id, userId)
+    );
+    if (!data) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
-    const items = await query('SELECT * FROM order_items WHERE order_id = ?', [id]);
-    const shipments = await fetchOrderShipments(id);
-    res.json({ success: true, data: { order: orders[0], items, shipments } });
+    res.json({ success: true, data });
   } catch (error) {
     next(error);
   }
@@ -364,6 +509,7 @@ async function cancelOwnOrder(req, res, next) {
     }
 
     await query("UPDATE orders SET status = 'cancelled' WHERE id = ?", [id]);
+    await bumpOrdersVersion();
     res.json({ success: true, message: 'Order cancelled successfully' });
   } catch (error) {
     next(error);
@@ -373,26 +519,104 @@ async function cancelOwnOrder(req, res, next) {
 // Admin Order Endpoints
 async function listAdminOrders(req, res, next) {
   try {
-    const { status, page = 1, limit = 20 } = req.query;
-    const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
+    const {
+      status = '',
+      role = '',
+      payment_status = '',
+      search = '',
+      page = 1,
+      limit = 20,
+      cursor = ''
+    } = req.query;
 
-    let whereClause = '';
-    const params = [];
-    if (status) {
-      whereClause = 'WHERE status = ?';
-      params.push(status);
-    }
+    const parsedLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+    const parsedPage = Math.max(1, parseInt(page, 10) || 1);
+    const parsedCursor = cursor ? parseInt(cursor, 10) : null;
+    const trimmedSearch = String(search || '').trim();
+    const offset = (parsedPage - 1) * parsedLimit;
 
-    const [{ total }] = await query(`SELECT COUNT(*) as total FROM orders ${whereClause}`, params);
-    const orders = await query(`SELECT * FROM orders ${whereClause} ORDER BY id DESC LIMIT ? OFFSET ?`, [...params, parseInt(limit, 10), offset]);
+    const cacheSubKey = `admin_list:${status}:${role}:${payment_status}:${trimmedSearch}:${parsedPage}:${parsedLimit}:${parsedCursor || ''}`;
 
-    res.json({
-      success: true,
-      data: {
-        orders,
-        pagination: { total, page: parseInt(page, 10), limit: parseInt(limit, 10), pages: Math.ceil(total / limit) }
+    const data = await getOrSetOrderCache(cacheSubKey, async () => {
+      const conditions = [];
+      const countParams = [];
+
+      if (status) {
+        conditions.push('status = ?');
+        countParams.push(status);
       }
+      if (role) {
+        conditions.push('placed_by_role = ?');
+        countParams.push(role);
+      }
+      if (payment_status) {
+        conditions.push('payment_status = ?');
+        countParams.push(payment_status);
+      }
+      if (trimmedSearch) {
+        const likePattern = `%${trimmedSearch}%`;
+        const prefixPattern = `${trimmedSearch}%`;
+        conditions.push('(order_number LIKE ? OR shipping_name LIKE ? OR shipping_phone LIKE ?)');
+        countParams.push(prefixPattern, likePattern, likePattern);
+      }
+
+      const countWhereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+      const listConditions = [...conditions];
+      const listParams = [...countParams];
+      if (parsedCursor && Number.isFinite(parsedCursor)) {
+        listConditions.push('id < ?');
+        listParams.push(parsedCursor);
+      }
+      const listWhereClause = listConditions.length > 0 ? `WHERE ${listConditions.join(' AND ')}` : '';
+
+      // Deferred join: inner subquery scans only narrow B-tree index for pagination;
+      // outer join projects only the columns rendered by Order Management table.
+      const listSql = parsedCursor
+        ? `SELECT o.id, o.order_number, o.user_id, o.placed_by_role, o.status,
+                  o.payment_status, o.payment_method, o.is_cod, o.shipping_name,
+                  o.grand_total, o.created_at, u.name AS user_name
+           FROM orders o
+           INNER JOIN (
+             SELECT id FROM orders ${listWhereClause} ORDER BY id DESC LIMIT ?
+           ) page_ids ON o.id = page_ids.id
+           LEFT JOIN users u ON o.user_id = u.id
+           ORDER BY o.id DESC`
+        : `SELECT o.id, o.order_number, o.user_id, o.placed_by_role, o.status,
+                  o.payment_status, o.payment_method, o.is_cod, o.shipping_name,
+                  o.grand_total, o.created_at, u.name AS user_name
+           FROM orders o
+           INNER JOIN (
+             SELECT id FROM orders ${listWhereClause} ORDER BY id DESC LIMIT ? OFFSET ?
+           ) page_ids ON o.id = page_ids.id
+           LEFT JOIN users u ON o.user_id = u.id
+           ORDER BY o.id DESC`;
+
+      const listQueryParams = parsedCursor
+        ? [...listParams, parsedLimit]
+        : [...listParams, parsedLimit, offset];
+
+      const [countRows, orders] = await Promise.all([
+        query(`SELECT COUNT(*) as total FROM orders ${countWhereClause}`, countParams),
+        query(listSql, listQueryParams)
+      ]);
+
+      const total = Number(countRows[0]?.total || 0);
+      const nextCursor = orders.length === parsedLimit ? orders[orders.length - 1].id : null;
+
+      return {
+        orders,
+        pagination: {
+          total,
+          page: parsedPage,
+          limit: parsedLimit,
+          pages: Math.max(1, Math.ceil(total / parsedLimit)),
+          next_cursor: nextCursor
+        }
+      };
     });
+
+    res.json({ success: true, data });
   } catch (error) {
     next(error);
   }
@@ -401,13 +625,13 @@ async function listAdminOrders(req, res, next) {
 async function getAdminOrderDetail(req, res, next) {
   try {
     const { id } = req.params;
-    const orders = await query('SELECT * FROM orders WHERE id = ?', [id]);
-    if (orders.length === 0) {
+    const data = await getOrSetOrderCache(`admin_detail:${id}`, () =>
+      fetchOrderDetailBundle(id, null)
+    );
+    if (!data) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
-    const items = await query('SELECT * FROM order_items WHERE order_id = ?', [id]);
-    const shipments = await fetchOrderShipments(id);
-    res.json({ success: true, data: { order: orders[0], items, shipments } });
+    res.json({ success: true, data });
   } catch (error) {
     next(error);
   }
@@ -422,6 +646,7 @@ async function updateOrderStatus(req, res, next) {
     }
 
     await query('UPDATE orders SET status = ? WHERE id = ?', [status, id]);
+    await bumpOrdersVersion();
     res.json({
       success: true,
       data: { id: parseInt(id, 10), status, order_status: status },
@@ -443,6 +668,7 @@ async function updatePaymentStatus(req, res, next) {
 
     const paidAtSql = payment_status === 'paid' ? ', paid_at = COALESCE(paid_at, NOW())' : '';
     await query(`UPDATE orders SET payment_status = ? ${paidAtSql} WHERE id = ?`, [payment_status, id]);
+    await bumpOrdersVersion();
 
     res.json({
       success: true,
@@ -479,6 +705,7 @@ async function updateOrderShipping(req, res, next) {
       );
     }
 
+    await bumpOrdersVersion();
     res.json({ success: true, message: 'Order shipping updated' });
   } catch (error) {
     next(error);
@@ -557,6 +784,7 @@ async function bulkUpdateOrderStatus(req, res, next) {
       `UPDATE orders SET status = ?, admin_note = COALESCE(?, admin_note) WHERE id IN (${placeholders})`,
       [status, note || null, ...order_ids]
     );
+    await bumpOrdersVersion();
 
     res.json({
       success: true,
