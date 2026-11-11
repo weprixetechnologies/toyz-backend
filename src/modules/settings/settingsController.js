@@ -1,4 +1,5 @@
 const { query } = require('../../config/db');
+const { bumpShippingVersion } = require('../../cache/shippingCache');
 
 const DEFAULT_FOOTER_SETTINGS = {
   brand: {
@@ -336,6 +337,7 @@ async function bulkUpdateSettings(req, res, next) {
       }
     }
 
+    await bumpShippingVersion();
     res.json({ success: true, message: 'Settings updated successfully' });
   } catch (error) {
     next(error);
@@ -351,6 +353,7 @@ async function updateSingleSetting(req, res, next) {
     }
 
     await query('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [String(value), key]);
+    await bumpShippingVersion();
     res.json({ success: true, message: `Setting '${key}' updated` });
   } catch (error) {
     next(error);

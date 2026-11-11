@@ -1,6 +1,7 @@
 const db = require('../../config/db');
 const bus = require('../../events/bus');
 const { bumpOrdersVersion } = require('../../cache/orderCache');
+const { getOrSetShippingCache, bumpShippingVersion } = require('../../cache/shippingCache');
 
 class ShippingService {
   /**
@@ -69,20 +70,47 @@ class ShippingService {
   }
 
   /**
-   * List active shipping presets
+   * List active shipping presets (cached)
    */
   async getActivePresets() {
-    const presets = await db.query(
-      `SELECT * FROM shipping_presets WHERE is_active = 1 ORDER BY sort_order ASC, id ASC`
-    );
-    return presets || [];
+    return getOrSetShippingCache('active_presets', async () => {
+      const presets = await db.query(
+        `SELECT * FROM shipping_presets WHERE is_active = 1 ORDER BY sort_order ASC, id ASC`
+      );
+      return presets || [];
+    });
+  }
+
+  /**
+   * Builds/returns a cached shipping rule context containing settings and
+   * a pincode -> preset lookup index for O(1) resolution.
+   */
+  async _getShippingQuoteContext() {
+    return getOrSetShippingCache('quote_context', async () => {
+      const [settings, activePresets] = await Promise.all([
+        db.query(
+          "SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('global_shipping_fee', 'shipping_cost_default', 'shipping_applies_to', 'free_shipping_threshold')"
+        ),
+        db.query(
+          'SELECT * FROM shipping_presets WHERE is_active = 1 ORDER BY sort_order ASC, id DESC'
+        )
+      ]);
+
+      const values = Object.fromEntries((settings || []).map((row) => [row.setting_key, row.setting_value]));
+      const presetMap = {};
+      for (const p of (activePresets || [])) {
+        const pin = String(p.label || '').trim();
+        if (pin && !Object.prototype.hasOwnProperty.call(presetMap, pin)) {
+          presetMap[pin] = p;
+        }
+      }
+
+      return { values, presetMap };
+    });
   }
 
   async getQuote({ pinCode = null, subtotal = 0, userRole = 'customer' } = {}) {
-    const settings = await db.query(
-      "SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('global_shipping_fee', 'shipping_cost_default', 'shipping_applies_to', 'free_shipping_threshold')"
-    );
-    const values = Object.fromEntries(settings.map(row => [row.setting_key, row.setting_value]));
+    const { values, presetMap } = await this._getShippingQuoteContext();
     const appliesTo = values.shipping_applies_to || 'customer_only';
     const fallbackCost = parseFloat(values.global_shipping_fee ?? values.shipping_cost_default ?? '50') || 0;
     const freeThreshold = parseFloat(values.free_shipping_threshold || '0') || 0;
@@ -95,11 +123,13 @@ class ShippingService {
     }
 
     if (pinCode) {
-      const presets = await db.query(
-        'SELECT * FROM shipping_presets WHERE label = ? AND is_active = 1 ORDER BY sort_order ASC, id ASC LIMIT 1',
-        [String(pinCode).trim()]
-      );
-      if (presets.length > 0) return { ...presets[0], source: 'pincode', free_shipping_threshold: freeThreshold };
+      const normalizedPin = String(pinCode).trim();
+      const matched = Object.prototype.hasOwnProperty.call(presetMap, normalizedPin)
+        ? presetMap[normalizedPin]
+        : null;
+      if (matched) {
+        return { ...matched, source: 'pincode', free_shipping_threshold: freeThreshold };
+      }
     }
 
     return {
@@ -119,11 +149,13 @@ class ShippingService {
   }
 
   /**
-   * Admin: List all presets
+   * Admin: List all presets (two-tier cached)
    */
   async adminListPresets() {
-    const presets = await db.query(`SELECT * FROM shipping_presets ORDER BY sort_order ASC, id ASC`);
-    return presets || [];
+    return getOrSetShippingCache('admin_presets', async () => {
+      const presets = await db.query(`SELECT * FROM shipping_presets ORDER BY sort_order ASC, id ASC`);
+      return presets || [];
+    });
   }
 
   /**
@@ -141,9 +173,10 @@ class ShippingService {
     const result = await db.query(
       `INSERT INTO shipping_presets (label, description, cost, estimated_days, is_active, sort_order)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [String(label).trim(), description || null, parsedCost, estimated_days || null, is_active !== undefined ? is_active : 1, sort_order || 0]
+      [String(label).trim(), description || null, parsedCost, estimated_days || null, is_active !== undefined ? (is_active ? 1 : 0) : 1, sort_order || 0]
     );
 
+    await bumpShippingVersion();
     const presets = await db.query('SELECT * FROM shipping_presets WHERE id = ?', [result.insertId]);
     return presets[0];
   }
@@ -168,9 +201,10 @@ class ShippingService {
            is_active = COALESCE(?, is_active),
            sort_order = COALESCE(?, sort_order)
        WHERE id = ?`,
-      [label !== undefined ? String(label).trim() : undefined, description, cost !== undefined ? Number(cost) : null, estimated_days, is_active, sort_order, id]
+      [label !== undefined ? String(label).trim() : undefined, description, cost !== undefined ? Number(cost) : null, estimated_days, is_active !== undefined ? (is_active ? 1 : 0) : undefined, sort_order, id]
     );
 
+    await bumpShippingVersion();
     const presets = await db.query('SELECT * FROM shipping_presets WHERE id = ?', [id]);
     return presets[0] || null;
   }
@@ -180,6 +214,7 @@ class ShippingService {
    */
   async adminDeletePreset(id) {
     await db.query('DELETE FROM shipping_presets WHERE id = ?', [id]);
+    await bumpShippingVersion();
     return { id, deleted: true };
   }
 

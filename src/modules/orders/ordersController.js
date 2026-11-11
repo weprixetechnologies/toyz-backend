@@ -2,6 +2,7 @@ const { getProductMoq, resolvePrice, isApprovedRetailer } = require('../../utils
 const { query, pool } = require('../../config/db');
 const eventBus = require('../../events/bus');
 const { getOrSetOrderCache, bumpOrdersVersion } = require('../../cache/orderCache');
+const shippingService = require('../shipping/shippingService');
 
 async function placeOrder(req, res, next) {
   const connection = await pool.getConnection();
@@ -201,20 +202,13 @@ async function placeOrder(req, res, next) {
     const totalDiscount = evaluation ? evaluation.total_discount : 0;
     const appliedCoupon = (evaluation && evaluation.applied_coupon && evaluation.applied_coupon.valid !== false) ? evaluation.applied_coupon.code : null;
 
-    // Shipping cost lookup
-    let shippingCost = 0;
-    const [shippingSettings] = await connection.query(
-      "SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('global_shipping_fee', 'shipping_cost_default', 'shipping_applies_to', 'free_shipping_threshold')"
-    );
-    const shippingValues = Object.fromEntries(shippingSettings.map(row => [row.setting_key, row.setting_value]));
-    const shippingScope = shippingValues.shipping_applies_to || 'customer_only';
-    const fallbackShipping = parseFloat(shippingValues.global_shipping_fee ?? shippingValues.shipping_cost_default ?? '50') || 0;
-    const freeShippingThreshold = parseFloat(shippingValues.free_shipping_threshold || '0') || 0;
-    if (!(isRetailer && shippingScope === 'customer_only') && !(freeShippingThreshold > 0 && finalSubtotal >= freeShippingThreshold)) {
-      const pinCode = String(address.pin_code).trim();
-      const [presetRes] = await connection.query('SELECT cost FROM shipping_presets WHERE label = ? AND is_active = 1 LIMIT 1', [pinCode]);
-      shippingCost = presetRes.length > 0 ? parseFloat(presetRes[0].cost) : fallbackShipping;
-    }
+    // Shipping cost lookup (single source of truth via cached shippingService)
+    const shippingQuote = await shippingService.getQuote({
+      pinCode: address.pin_code,
+      subtotal: finalSubtotal,
+      userRole: isRetailer ? 'retailer' : 'customer'
+    });
+    const shippingCost = parseFloat(shippingQuote?.cost || 0) || 0;
 
     const grandTotal = finalSubtotal + shippingCost;
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');

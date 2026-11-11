@@ -956,7 +956,7 @@ async function initDb() {
     console.error('[DB Init Error] floating_widgets_config seeding failed:', e.message);
   }
 
-  // Ensure performance indexes on products, orders, and product_images tables
+  // Ensure performance indexes on products, orders, product_images, and shipping_presets tables
   const ensureIndexes = [
     { name: 'idx_status_active', table: 'products', cols: '(is_active, deleted_at)' },
     { name: 'idx_price', table: 'products', cols: '(sale_price, base_price)' },
@@ -965,7 +965,8 @@ async function initDb() {
     { name: 'idx_role_status_id', table: 'orders', cols: '(placed_by_role, status, id)' },
     { name: 'idx_user_id', table: 'orders', cols: '(user_id, id)' },
     { name: 'idx_payment_status_id', table: 'orders', cols: '(payment_status, id)' },
-    { name: 'idx_product_primary_img', table: 'product_images', cols: '(product_id, is_primary, sort_order)' }
+    { name: 'idx_product_primary_img', table: 'product_images', cols: '(product_id, is_primary, sort_order)' },
+    { name: 'idx_label_active', table: 'shipping_presets', cols: '(label, is_active)' }
   ];
   for (const idx of ensureIndexes) {
     try {
