@@ -22,6 +22,8 @@ router.get('/:id/inventory', authMiddleware, roleGuard('admin', 'superadmin', 'i
 router.post('/:id/inventory/adjust', authMiddleware, roleGuard('admin', 'superadmin', 'inventory_manager'), activityLogger('inventory', 'adjust_inventory'), productsController.adjustInventory);
 
 router.post('/', authMiddleware, roleGuard('admin', 'superadmin', 'inventory_manager'), activityLogger('products', 'create_product'), productsController.createProduct);
+router.patch('/:id/status', authMiddleware, roleGuard('admin', 'superadmin', 'inventory_manager'), activityLogger('products', 'toggle_product_status'), productsController.toggleProductStatus);
+router.put('/:id/status', authMiddleware, roleGuard('admin', 'superadmin', 'inventory_manager'), activityLogger('products', 'toggle_product_status'), productsController.toggleProductStatus);
 router.put('/:id', authMiddleware, roleGuard('admin', 'superadmin', 'inventory_manager'), activityLogger('products', 'update_product'), productsController.updateProduct);
 router.delete('/:id', authMiddleware, roleGuard('admin', 'superadmin'), activityLogger('products', 'delete_product'), productsController.deleteProduct);
 

@@ -37,6 +37,8 @@ const blogsRoutes = require('./modules/blogs/blogsRoutes');
 const newsletterRoutes = require('./modules/newsletter/newsletterRoutes');
 const floatingWidgetsRoutes = require('./modules/floatingWidgets/floatingWidgetsRoutes');
 const leadsRoutes = require('./modules/leads/leadsRoutes');
+const policiesRoutes = require('./modules/policies/policiesRoutes');
+const { initPoliciesTable } = require('./modules/policies/policiesModel');
 
 const app = express();
 
@@ -119,6 +121,7 @@ initEventListeners();
 // Boot-time sync for Payment Gateway Manager
 const { syncGatewaysToDb } = require('./modules/payments/gateways');
 syncGatewaysToDb();
+initPoliciesTable();
 
 // Mount API v1 Routes
 app.use('/api/v1/auth', authRoutes);
@@ -154,6 +157,7 @@ app.use('/api/v1/blogs', blogsRoutes);
 app.use('/api/v1/newsletter', newsletterRoutes);
 app.use('/api/v1/floating-widgets', floatingWidgetsRoutes);
 app.use('/api/v1/leads', leadsRoutes);
+app.use('/api/v1/policies', policiesRoutes);
 
 // Health Check & Sitemap Routes
 const seoController = require('./modules/seo/seoController');

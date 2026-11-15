@@ -60,7 +60,9 @@ const DEFAULT_FOOTER_SETTINGS = {
     copyright_text: '© {year} Provoke Playtech Inc. All rights reserved.',
     links: [
       { id: 'bot-1', label: 'Privacy Policy', url: '/privacy', target: '_self' },
-      { id: 'bot-2', label: 'Terms of Service', url: '/terms', target: '_self' }
+      { id: 'bot-2', label: 'Refund Policy', url: '/refund-policy', target: '_self' },
+      { id: 'bot-3', label: 'Terms of Service', url: '/terms', target: '_self' },
+      { id: 'bot-4', label: 'Shipping Policy', url: '/shipping-policy', target: '_self' }
     ]
   }
 };

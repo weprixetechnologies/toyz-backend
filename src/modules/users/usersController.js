@@ -29,8 +29,14 @@ async function listUsers(req, res, next) {
     const usersSql = `
       SELECT u.id, u.name, u.email, u.phone, u.role, u.status, u.avatar, u.gstin, u.referral_code, u.segment_tags, u.created_at,
              (SELECT COUNT(*) FROM orders WHERE user_id = u.id) as total_orders,
-             (SELECT COALESCE(SUM(grand_total), 0) FROM orders WHERE user_id = u.id AND status != 'cancelled') as total_spend
+             (SELECT COALESCE(SUM(grand_total), 0) FROM orders WHERE user_id = u.id AND status != 'cancelled') as total_spend,
+             rp.id as reseller_id,
+             rp.business_name as reseller_business_name,
+             rp.status as reseller_status,
+             rp.global_discount_value as reseller_discount_pct,
+             rp.credit_limit as reseller_credit_limit
       FROM users u
+      LEFT JOIN reseller_profiles rp ON u.id = rp.user_id
       ${whereClause}
       ORDER BY u.id DESC
       LIMIT ? OFFSET ?
@@ -314,6 +320,120 @@ async function updateSegmentTags(req, res, next) {
   }
 }
 
+async function updateResellerProfile(req, res, next) {
+  try {
+    const { id } = req.params;
+    const {
+      global_discount_value,
+      discount_type = 'percent',
+      credit_limit,
+      business_name,
+      gstin,
+      pan,
+      address,
+      status,
+      rejection_reason
+    } = req.body;
+
+    const [user] = await query('SELECT id, name, email, phone, role FROM users WHERE id = ? AND deleted_at IS NULL', [id]);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const [existingProfile] = await query('SELECT * FROM reseller_profiles WHERE user_id = ?', [id]);
+
+    let profileId;
+    if (existingProfile) {
+      profileId = existingProfile.id;
+      const updateFields = [];
+      const updateParams = [];
+
+      if (global_discount_value !== undefined) {
+        updateFields.push('has_special_price = 1', 'global_discount_type = ?', 'global_discount_value = ?');
+        updateParams.push(discount_type === 'flat' ? 'flat' : 'percent', parseFloat(global_discount_value || 0));
+      }
+      if (credit_limit !== undefined) {
+        updateFields.push('credit_limit = ?');
+        updateParams.push(parseFloat(credit_limit || 0));
+      }
+      if (business_name !== undefined) {
+        updateFields.push('business_name = ?');
+        updateParams.push(business_name);
+      }
+      if (gstin !== undefined) {
+        updateFields.push('gstin = ?');
+        updateParams.push(gstin);
+      }
+      if (pan !== undefined) {
+        updateFields.push('pan = ?');
+        updateParams.push(pan);
+      }
+      if (address !== undefined) {
+        updateFields.push('address = ?');
+        updateParams.push(address);
+      }
+      if (status !== undefined) {
+        updateFields.push('status = ?');
+        updateParams.push(status);
+        if (status === 'approved') {
+          updateFields.push('approved_at = NOW()', 'approved_by = ?');
+          updateParams.push(req.user?.id || null);
+        } else if (status === 'rejected') {
+          updateFields.push('rejection_reason = ?');
+          updateParams.push(rejection_reason || null);
+        }
+      }
+
+      if (updateFields.length > 0) {
+        await query(
+          `UPDATE reseller_profiles SET ${updateFields.join(', ')}, updated_at = NOW() WHERE id = ?`,
+          [...updateParams, profileId]
+        );
+      }
+    } else {
+      const discVal = parseFloat(global_discount_value || 0);
+      const credVal = parseFloat(credit_limit || 0);
+      const resStatus = status || 'approved';
+
+      const insertResult = await query(
+        `INSERT INTO reseller_profiles (user_id, business_name, gstin, pan, address, status, credit_limit, has_special_price, global_discount_type, global_discount_value, approved_at, approved_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NOW(), ?)`,
+        [
+          id,
+          business_name || user.name || 'Reseller Business',
+          gstin || user.gstin || null,
+          pan || null,
+          address || null,
+          resStatus,
+          credVal,
+          discount_type === 'flat' ? 'flat' : 'percent',
+          discVal,
+          req.user?.id || null
+        ]
+      );
+      profileId = insertResult.insertId;
+    }
+
+    if (status === 'approved' || (existingProfile && existingProfile.status === 'approved') || (status === undefined && user.role !== 'retailer')) {
+      await query("UPDATE users SET role = 'retailer' WHERE id = ?", [id]);
+    } else if (status === 'suspended' || status === 'rejected') {
+      await query("UPDATE users SET role = 'customer' WHERE id = ?", [id]);
+    }
+
+    invalidateUserAuthCache(id);
+
+    const [updatedProfile] = await query('SELECT * FROM reseller_profiles WHERE id = ?', [profileId]);
+
+    res.json({
+      success: true,
+      message: 'Reseller account details updated successfully',
+      data: { reseller_profile: updatedProfile }
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   listUsers,
   getUserById,
@@ -329,5 +449,6 @@ module.exports = {
   updateOwnAddress,
   deleteOwnAddress,
   setDefaultAddress,
-  updateSegmentTags
+  updateSegmentTags,
+  updateResellerProfile
 };

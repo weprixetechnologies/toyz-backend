@@ -3,174 +3,343 @@ const StorageService = require('../../utils/bunnyUpload');
 const { resolvePrice } = require('../../utils/priceResolver');
 const redisClient = require('../../config/redis');
 
+function getListProductsCacheKey(queryObj, user = null) {
+  const {
+    category_id = '',
+    brand_id = '',
+    badge_id = '',
+    is_featured = '',
+    search = '',
+    sku = '',
+    min_price = '',
+    max_price = '',
+    in_stock = '',
+    stock_status = '',
+    min_rating = '',
+    status = '',
+    is_active = '',
+    created_from = '',
+    created_to = '',
+    sort = 'created_at_desc',
+    page = 1,
+    limit = 20
+  } = queryObj;
+  const stockVal = stock_status || in_stock || '';
+  const statusVal = status !== undefined && status !== '' ? status : (is_active !== undefined ? is_active : '');
+  const uId = user?.id || 'guest';
+  const uRole = user?.role || 'guest';
+  return `products_list:${category_id}:${brand_id}:${badge_id}:${is_featured}:${search}:${sku}:${min_price}:${max_price}:${stockVal}:${min_rating}:${statusVal}:${created_from}:${created_to}:${sort}:${page}:${limit}:user_${uId}:role_${uRole}`;
+}
+
+async function executeListProductsQuery(queryParams, user = null) {
+  const {
+    category_id,
+    brand_id,
+    badge_id,
+    is_featured,
+    search,
+    sku,
+    min_price,
+    max_price,
+    in_stock,
+    stock_status,
+    min_rating,
+    status,
+    is_active,
+    created_from,
+    created_to,
+    sort = 'created_at_desc',
+    page = 1,
+    limit = 20
+  } = queryParams;
+
+  const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
+  let whereClause = 'WHERE p.deleted_at IS NULL';
+  const params = [];
+
+  const isAdminUser = user && ['admin', 'superadmin', 'inventory_manager'].includes(user.role);
+  const effectiveStatus = status !== undefined && status !== '' ? status : (is_active !== undefined && is_active !== '' ? is_active : null);
+
+  if (effectiveStatus !== null && effectiveStatus !== 'all') {
+    if (effectiveStatus === 'active' || effectiveStatus === '1' || effectiveStatus === 1 || effectiveStatus === true || effectiveStatus === 'true') {
+      whereClause += ' AND p.is_active = 1';
+    } else if (effectiveStatus === 'inactive' || effectiveStatus === '0' || effectiveStatus === 0 || effectiveStatus === false || effectiveStatus === 'false') {
+      whereClause += ' AND p.is_active = 0';
+    }
+  } else if (!isAdminUser && effectiveStatus === null) {
+    whereClause += ' AND p.is_active = 1';
+  }
+
+  if (category_id) {
+    const categories = category_id.toString().split(',').map(s => s.trim()).filter(Boolean);
+    if (categories.length === 1) {
+      whereClause += ' AND p.category_id = ?';
+      params.push(categories[0]);
+    } else if (categories.length > 1) {
+      whereClause += ` AND p.category_id IN (${categories.map(() => '?').join(',')})`;
+      params.push(...categories);
+    }
+  }
+
+  if (brand_id) {
+    const brands = brand_id.toString().split(',').map(s => s.trim()).filter(Boolean);
+    if (brands.length === 1) {
+      whereClause += ' AND p.brand_id = ?';
+      params.push(brands[0]);
+    } else if (brands.length > 1) {
+      whereClause += ` AND p.brand_id IN (${brands.map(() => '?').join(',')})`;
+      params.push(...brands);
+    }
+  }
+
+  if (badge_id) {
+    const badges = badge_id.toString().split(',').map(s => s.trim()).filter(Boolean);
+    if (badges.length > 0) {
+      whereClause += ` AND p.id IN (SELECT product_id FROM product_badges WHERE badge_id IN (${badges.map(() => '?').join(',')}))`;
+      params.push(...badges);
+    }
+  }
+
+  if (is_featured !== undefined && is_featured !== '') {
+    whereClause += ' AND p.is_featured = ?';
+    params.push(is_featured === 'true' || is_featured === '1' || is_featured === 1 ? 1 : 0);
+  }
+
+  if (search) {
+    whereClause += ' AND (p.name LIKE ? OR p.short_desc LIKE ? OR p.sku LIKE ?)';
+    params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+  }
+
+  if (sku) {
+    whereClause += ' AND p.sku LIKE ?';
+    params.push(`%${sku}%`);
+  }
+
+  if (min_price) {
+    whereClause += ' AND COALESCE(p.sale_price, p.base_price, (SELECT MIN(price) FROM product_variants WHERE product_id = p.id)) >= ?';
+    params.push(parseFloat(min_price));
+  }
+
+  if (max_price) {
+    whereClause += ' AND COALESCE(p.sale_price, p.base_price, (SELECT MIN(price) FROM product_variants WHERE product_id = p.id)) <= ?';
+    params.push(parseFloat(max_price));
+  }
+
+  if (stock_status) {
+    if (stock_status === 'in_stock') {
+      whereClause += ' AND (p.stock_qty > 0 OR p.product_type = \'variable\')';
+    } else if (stock_status === 'out_of_stock') {
+      whereClause += ' AND p.stock_qty <= 0 AND p.product_type != \'variable\'';
+    } else if (stock_status === 'low_stock') {
+      whereClause += ' AND p.stock_qty <= p.low_stock_threshold';
+    }
+  } else if (in_stock !== undefined && in_stock !== '') {
+    if (in_stock === 'true' || in_stock === '1' || in_stock === 1) {
+      whereClause += ' AND (p.stock_qty > 0 OR p.product_type = \'variable\')';
+    } else if (in_stock === 'false' || in_stock === '0' || in_stock === 0) {
+      whereClause += ' AND p.stock_qty <= 0 AND p.product_type != \'variable\'';
+    }
+  }
+
+  if (created_from) {
+    whereClause += ' AND DATE(p.created_at) >= ?';
+    params.push(created_from);
+  }
+
+  if (created_to) {
+    whereClause += ' AND DATE(p.created_at) <= ?';
+    params.push(created_to);
+  }
+
+  let havingClause = '';
+  const havingParams = [];
+  if (min_rating) {
+    havingClause = 'HAVING avg_rating >= ?';
+    havingParams.push(parseFloat(min_rating));
+  }
+
+  let orderBy = 'ORDER BY p.id DESC';
+  if (sort === 'price_asc' || sort === 'price_low') {
+    orderBy = 'ORDER BY COALESCE(p.sale_price, p.base_price, (SELECT MIN(price) FROM product_variants WHERE product_id = p.id)) ASC';
+  } else if (sort === 'price_desc' || sort === 'price_high') {
+    orderBy = 'ORDER BY COALESCE(p.sale_price, p.base_price, (SELECT MIN(price) FROM product_variants WHERE product_id = p.id)) DESC';
+  } else if (sort === 'name_asc') {
+    orderBy = 'ORDER BY p.name ASC';
+  } else if (sort === 'name_desc') {
+    orderBy = 'ORDER BY p.name DESC';
+  } else if (sort === 'oldest' || sort === 'created_at_asc') {
+    orderBy = 'ORDER BY p.created_at ASC, p.id ASC';
+  } else if (sort === 'newest' || sort === 'created_at_desc') {
+    orderBy = 'ORDER BY p.created_at DESC, p.id DESC';
+  } else if (sort === 'stock_asc') {
+    orderBy = 'ORDER BY p.stock_qty ASC';
+  } else if (sort === 'stock_desc') {
+    orderBy = 'ORDER BY p.stock_qty DESC';
+  } else if (sort === 'sku_asc') {
+    orderBy = 'ORDER BY p.sku ASC';
+  } else if (sort === 'sku_desc') {
+    orderBy = 'ORDER BY p.sku DESC';
+  }
+
+  let countSql;
+  let countQueryParams;
+  if (havingClause) {
+    countSql = `
+      SELECT COUNT(*) as total FROM (
+        SELECT p.id,
+               (SELECT ROUND(AVG(rating),1) FROM product_reviews WHERE product_id = p.id AND status = 'approved') as avg_rating
+        FROM products p
+        ${whereClause}
+        ${havingClause}
+      ) as t
+    `;
+    countQueryParams = [...params, ...havingParams];
+  } else {
+    countSql = `SELECT COUNT(*) as total FROM products p ${whereClause}`;
+    countQueryParams = params;
+  }
+  const [{ total }] = await query(countSql, countQueryParams);
+
+  const productsSql = `
+    SELECT p.id, p.category_id, p.brand_id, p.name, p.slug, p.product_type,
+           p.base_price, p.sale_price, p.cost_price, p.sku, p.stock_qty,
+           p.low_stock_threshold, p.track_inventory, p.is_active, p.is_featured, p.created_at,
+           c.name as category_name, c.slug as category_slug, b.name as brand_name,
+           (SELECT url FROM product_images WHERE product_id = p.id ORDER BY is_primary DESC, sort_order ASC LIMIT 1) as primary_image,
+           (SELECT ROUND(AVG(rating),1) FROM product_reviews WHERE product_id = p.id AND status = 'approved') as avg_rating,
+           (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id AND status = 'approved') as review_count
+    FROM products p
+    LEFT JOIN categories c ON p.category_id = c.id
+    LEFT JOIN brands b ON p.brand_id = b.id
+    ${whereClause}
+    ${havingClause ? havingClause : ''}
+    ${orderBy}
+    LIMIT ? OFFSET ?
+  `;
+
+  const products = await query(productsSql, [...params, ...havingParams, parseInt(limit, 10), offset]);
+
+  if (products.length > 0) {
+    const productIds = products.map(p => p.id);
+    const productBadges = await query(
+      `SELECT pb.product_id, bd.id, bd.name, bd.badge_text, bd.bg_color, bd.text_color, bd.icon
+       FROM product_badges pb
+       JOIN badges bd ON pb.badge_id = bd.id
+       WHERE pb.product_id IN (${productIds.map(() => '?').join(',')}) AND bd.is_active = 1`,
+      productIds
+    );
+
+    const badgesMap = {};
+    for (const pb of productBadges) {
+      if (!badgesMap[pb.product_id]) badgesMap[pb.product_id] = [];
+      badgesMap[pb.product_id].push({
+        id: pb.id,
+        name: pb.name,
+        badge_text: pb.badge_text,
+        bg_color: pb.bg_color,
+        text_color: pb.text_color,
+        icon: pb.icon
+      });
+    }
+
+    for (const p of products) {
+      p.badges = badgesMap[p.id] || [];
+    }
+  }
+
+  if (user && user.role === 'retailer') {
+    for (const p of products) {
+      try {
+        const priceRes = await resolvePrice({ user, product: p, qty: 1 });
+        p.reseller_price = priceRes.unit_price;
+        p.moq = priceRes.moq;
+      } catch (e) {}
+    }
+  }
+
+  return {
+    products,
+    pagination: {
+      total,
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+      pages: Math.ceil(total / limit)
+    }
+  };
+}
+
+async function revalidateAndWarmProductCache() {
+  try {
+    if (redisClient && redisClient.status === 'ready') {
+      // 1. Purge all product list & detail caches
+      const patterns = ['products_list:*', 'products:*', 'products:list:*'];
+      for (const pattern of patterns) {
+        const keys = await redisClient.keys(pattern);
+        if (keys && keys.length > 0) {
+          await redisClient.del(...keys);
+          console.log(`[Cache] Invalidated ${keys.length} keys matching '${pattern}'`);
+        }
+      }
+
+      // 2. Fetch TTL from settings if configured
+      let ttl = 300;
+      try {
+        const settingRows = await query('SELECT setting_value FROM settings WHERE setting_key = ?', ['cache_ttl_products']);
+        if (settingRows && settingRows.length > 0 && settingRows[0].setting_value) {
+          ttl = parseInt(settingRows[0].setting_value, 10) || 300;
+        }
+      } catch (e) {}
+
+      // 3. Pre-warm default guest catalog (limit 20, newest, active only)
+      const guestParams = { page: 1, limit: 20, sort: 'created_at_desc', is_active: 1 };
+      const guestData = await executeListProductsQuery(guestParams, null);
+      const guestCacheKey = getListProductsCacheKey(guestParams, null);
+      const guestResponse = { success: true, meta: { cached: false }, data: guestData };
+      await redisClient.setex(guestCacheKey, ttl, JSON.stringify(guestResponse));
+
+      // Also warm legacy key format
+      const legacyGuestKey = 'products_list::::::::created_at_desc:1:20:user_guest:role_guest';
+      await redisClient.setex(legacyGuestKey, ttl, JSON.stringify(guestResponse));
+
+      // 4. Pre-warm default admin catalog (limit 50, newest, all items)
+      const adminParams = { page: 1, limit: 50, sort: 'created_at_desc', status: 'all' };
+      const adminData = await executeListProductsQuery(adminParams, { role: 'admin', id: 'admin' });
+      const adminCacheKey = getListProductsCacheKey(adminParams, { role: 'admin', id: 'admin' });
+      await redisClient.setex(adminCacheKey, ttl, JSON.stringify({ success: true, meta: { cached: false }, data: adminData }));
+
+      console.log('[Cache] Product catalog cache invalidated and regenerated successfully in Redis');
+
+      // 5. Emit event to eventBus
+      const eventBus = require('../../events/bus');
+      eventBus.emit('product.changed', { timestamp: Date.now() });
+    }
+  } catch (err) {
+    console.warn('[Cache] Error in revalidateAndWarmProductCache:', err.message);
+  }
+}
+
 async function listProducts(req, res, next) {
   try {
-    const { category_id, brand_id, is_featured, search, min_price, max_price, in_stock, min_rating, sort = 'created_at_desc', page = 1, limit = 20 } = req.query;
+    const cacheKey = getListProductsCacheKey(req.query, req.user);
 
-    const cacheKey = `products_list:${category_id || ''}:${brand_id || ''}:${is_featured || ''}:${search || ''}:${min_price || ''}:${max_price || ''}:${in_stock || ''}:${min_rating || ''}:${sort}:${page}:${limit}:user_${req.user?.id || 'guest'}:role_${req.user?.role || 'guest'}`;
-    const cachedData = await redisClient.get(cacheKey);
-    if (cachedData) {
-      console.log(`[Cache] HIT - Served from Redis: ${cacheKey}`);
-      const parsedData = JSON.parse(cachedData);
-      parsedData.meta = { cached: true };
-      res.set('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300');
-      return res.json(parsedData);
+    if (redisClient && redisClient.status === 'ready') {
+      const cachedData = await redisClient.get(cacheKey);
+      if (cachedData) {
+        console.log(`[Cache] HIT - Served from Redis: ${cacheKey}`);
+        const parsedData = JSON.parse(cachedData);
+        parsedData.meta = { cached: true };
+        res.set('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300');
+        return res.json(parsedData);
+      }
     }
 
     console.log(`[Cache] MISS - Fetching from Database: ${cacheKey}`);
-    const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
-
-    let whereClause = 'WHERE p.deleted_at IS NULL AND p.is_active = 1';
-    const params = [];
-
-    if (category_id) {
-      const categories = category_id.toString().split(',');
-      if (categories.length === 1) {
-        whereClause += ' AND p.category_id = ?';
-        params.push(categories[0]);
-      } else {
-        whereClause += ` AND p.category_id IN (${categories.map(() => '?').join(',')})`;
-        params.push(...categories);
-      }
-    }
-    if (brand_id) {
-      const brands = brand_id.toString().split(',');
-      if (brands.length === 1) {
-        whereClause += ' AND p.brand_id = ?';
-        params.push(brands[0]);
-      } else {
-        whereClause += ` AND p.brand_id IN (${brands.map(() => '?').join(',')})`;
-        params.push(...brands);
-      }
-    }
-    if (is_featured) {
-      whereClause += ' AND p.is_featured = ?';
-      params.push(is_featured === 'true' || is_featured === '1' ? 1 : 0);
-    }
-    if (search) {
-      whereClause += ' AND (p.name LIKE ? OR p.short_desc LIKE ? OR p.sku LIKE ?)';
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
-    }
-    if (min_price) {
-      whereClause += ' AND COALESCE(p.sale_price, p.base_price, (SELECT MIN(price) FROM product_variants WHERE product_id = p.id)) >= ?';
-      params.push(parseFloat(min_price));
-    }
-    if (max_price) {
-      whereClause += ' AND COALESCE(p.sale_price, p.base_price, (SELECT MIN(price) FROM product_variants WHERE product_id = p.id)) <= ?';
-      params.push(parseFloat(max_price));
-    }
-    if (in_stock) {
-      if (in_stock === 'true' || in_stock === '1') {
-        whereClause += ' AND (p.stock_qty > 0 OR p.product_type = \'variable\')';
-      } else if (in_stock === 'false' || in_stock === '0') {
-        whereClause += ' AND p.stock_qty <= 0 AND p.product_type != \'variable\'';
-      }
-    }
-
-    let havingClause = '';
-    const havingParams = [];
-    if (min_rating) {
-      havingClause = 'HAVING avg_rating >= ?';
-      havingParams.push(parseFloat(min_rating));
-    }
-
-    let orderBy = 'ORDER BY p.id DESC';
-    if (sort === 'price_asc' || sort === 'price_low') orderBy = 'ORDER BY COALESCE(p.sale_price, p.base_price, (SELECT MIN(price) FROM product_variants WHERE product_id = p.id)) ASC';
-    if (sort === 'price_desc' || sort === 'price_high') orderBy = 'ORDER BY COALESCE(p.sale_price, p.base_price, (SELECT MIN(price) FROM product_variants WHERE product_id = p.id)) DESC';
-    if (sort === 'name_asc') orderBy = 'ORDER BY p.name ASC';
-    if (sort === 'newest') orderBy = 'ORDER BY p.created_at DESC, p.id DESC';
-
-    // Fast count: Avoid correlated subquery for avg_rating if havingClause is empty
-    let countSql;
-    let countQueryParams;
-    if (havingClause) {
-      countSql = `
-        SELECT COUNT(*) as total FROM (
-          SELECT p.id,
-                 (SELECT ROUND(AVG(rating),1) FROM product_reviews WHERE product_id = p.id AND status = 'approved') as avg_rating
-          FROM products p
-          ${whereClause}
-          ${havingClause}
-        ) as t
-      `;
-      countQueryParams = [...params, ...havingParams];
-    } else {
-      countSql = `SELECT COUNT(*) as total FROM products p ${whereClause}`;
-      countQueryParams = params;
-    }
-    const [{ total }] = await query(countSql, countQueryParams);
-
-    // Selective column projection: Avoid full-text/LONGTEXT descriptions and metadata on listings
-    const productsSql = `
-      SELECT p.id, p.category_id, p.brand_id, p.name, p.slug, p.product_type,
-             p.base_price, p.sale_price, p.cost_price, p.sku, p.stock_qty,
-             p.track_inventory, p.is_active, p.is_featured, p.created_at,
-             c.name as category_name, c.slug as category_slug, b.name as brand_name,
-             (SELECT url FROM product_images WHERE product_id = p.id ORDER BY is_primary DESC, sort_order ASC LIMIT 1) as primary_image,
-             (SELECT ROUND(AVG(rating),1) FROM product_reviews WHERE product_id = p.id AND status = 'approved') as avg_rating,
-             (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id AND status = 'approved') as review_count
-      FROM products p
-      LEFT JOIN categories c ON p.category_id = c.id
-      LEFT JOIN brands b ON p.brand_id = b.id
-      ${whereClause}
-      ${havingClause ? havingClause : ''}
-      ${orderBy}
-      LIMIT ? OFFSET ?
-    `;
-
-    const products = await query(productsSql, [...params, ...havingParams, parseInt(limit, 10), offset]);
-
-    if (products.length > 0) {
-      const productIds = products.map(p => p.id);
-      const productBadges = await query(
-        `SELECT pb.product_id, bd.id, bd.name, bd.badge_text, bd.bg_color, bd.text_color, bd.icon
-         FROM product_badges pb
-         JOIN badges bd ON pb.badge_id = bd.id
-         WHERE pb.product_id IN (${productIds.map(() => '?').join(',')}) AND bd.is_active = 1`,
-        productIds
-      );
-
-      const badgesMap = {};
-      for (const pb of productBadges) {
-        if (!badgesMap[pb.product_id]) badgesMap[pb.product_id] = [];
-        badgesMap[pb.product_id].push({
-          id: pb.id,
-          name: pb.name,
-          badge_text: pb.badge_text,
-          bg_color: pb.bg_color,
-          text_color: pb.text_color,
-          icon: pb.icon
-        });
-      }
-
-      for (const p of products) {
-        p.badges = badgesMap[p.id] || [];
-      }
-    }
-
-    // ── Attach reseller_price for retailer users ─────────────────────────────
-    if (req.user && req.user.role === 'retailer') {
-      for (const p of products) {
-        try {
-          const priceRes = await resolvePrice({ user: req.user, product: p, qty: 1 });
-          p.reseller_price = priceRes.unit_price;
-          p.moq             = priceRes.moq;
-        } catch (e) { /* price resolution is best-effort */ }
-      }
-    }
+    const data = await executeListProductsQuery(req.query, req.user);
 
     const responseObj = {
       success: true,
       meta: { cached: false },
-      data: {
-        products,
-        pagination: {
-          total,
-          page: parseInt(page, 10),
-          limit: parseInt(limit, 10),
-          pages: Math.ceil(total / limit)
-        }
-      }
+      data
     };
 
     let ttl = 300;
@@ -179,11 +348,11 @@ async function listProducts(req, res, next) {
       if (settingRows && settingRows.length > 0 && settingRows[0].setting_value) {
         ttl = parseInt(settingRows[0].setting_value, 10) || 300;
       }
-    } catch (e) {
-      // fallback to default
-    }
+    } catch (e) {}
 
-    await redisClient.setex(cacheKey, ttl, JSON.stringify(responseObj));
+    if (redisClient && redisClient.status === 'ready') {
+      await redisClient.setex(cacheKey, ttl, JSON.stringify(responseObj));
+    }
 
     res.set('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300');
     res.json(responseObj);
@@ -312,6 +481,9 @@ async function createProduct(req, res, next) {
       }
     }
 
+    // Invalidate old cache and pre-warm fresh cache
+    await revalidateAndWarmProductCache();
+
     res.status(201).json({ success: true, message: 'Product created successfully', data: { id: productId } });
   } catch (error) {
     if (error.code === 'ER_DUP_ENTRY') {
@@ -359,6 +531,9 @@ async function updateProduct(req, res, next) {
       }
     }
 
+    // Invalidate old cache and pre-warm fresh cache
+    await revalidateAndWarmProductCache();
+
     res.json({ success: true, message: 'Product updated successfully' });
   } catch (error) {
     if (error.code === 'ER_DUP_ENTRY') {
@@ -368,10 +543,41 @@ async function updateProduct(req, res, next) {
   }
 }
 
+async function toggleProductStatus(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { is_active } = req.body || {};
+
+    const [existing] = await query('SELECT id, is_active, name FROM products WHERE id = ? AND deleted_at IS NULL', [id]);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+
+    const newStatus = is_active !== undefined ? (is_active ? 1 : 0) : (existing.is_active ? 0 : 1);
+
+    await query('UPDATE products SET is_active = ?, updated_at = NOW() WHERE id = ?', [newStatus, id]);
+
+    // Invalidate old cache and pre-warm fresh cache
+    await revalidateAndWarmProductCache();
+
+    res.json({
+      success: true,
+      message: `Product "${existing.name}" status updated to ${newStatus === 1 ? 'Active' : 'Inactive'}`,
+      data: { id: existing.id, is_active: newStatus }
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function deleteProduct(req, res, next) {
   try {
     const { id } = req.params;
     await query('UPDATE products SET deleted_at = NOW() WHERE id = ?', [id]);
+
+    // Invalidate old cache and pre-warm fresh cache
+    await revalidateAndWarmProductCache();
+
     res.json({ success: true, message: 'Product deleted' });
   } catch (error) {
     next(error);
@@ -493,6 +699,8 @@ async function createVariant(req, res, next) {
       }
     }
 
+    await revalidateAndWarmProductCache();
+
     res.status(201).json({ success: true, message: 'Variant created', data: { id: variantId } });
   } catch (error) {
     next(error);
@@ -528,6 +736,8 @@ async function updateVariant(req, res, next) {
       }
     }
 
+    await revalidateAndWarmProductCache();
+
     res.json({ success: true, message: 'Variant updated' });
   } catch (error) {
     next(error);
@@ -539,6 +749,9 @@ async function deleteVariant(req, res, next) {
     const { id, varId } = req.params;
     await query('DELETE FROM variant_attribute_values WHERE variant_id = ?', [varId]);
     await query('DELETE FROM product_variants WHERE id = ? AND product_id = ?', [varId, id]);
+
+    await revalidateAndWarmProductCache();
+
     res.json({ success: true, message: 'Variant deleted' });
   } catch (error) {
     next(error);
@@ -608,6 +821,8 @@ async function adjustInventory(req, res, next) {
       qty_after: qtyAfter,
       movement: resolvedMovement
     });
+
+    await revalidateAndWarmProductCache();
 
     res.json({
       success: true,
@@ -707,6 +922,8 @@ async function importProducts(req, res, next) {
     // Emit ONE SINGLE batched event for cache invalidation per §6.9
     eventBus.emit('product.changed', { batch_import: true, count: importedCount });
 
+    await revalidateAndWarmProductCache();
+
     res.json({
       success: true,
       data: { imported_count: importedCount, errors },
@@ -723,6 +940,8 @@ module.exports = {
   createProduct,
   updateProduct,
   deleteProduct,
+  toggleProductStatus,
+  revalidateAndWarmProductCache,
   uploadProductImage,
   deleteProductImage,
   reorderProductImages,

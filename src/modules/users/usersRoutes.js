@@ -22,6 +22,7 @@ router.get('/', authMiddleware, roleGuard('admin', 'superadmin'), usersControlle
 router.get('/:id', authMiddleware, roleGuard('admin', 'superadmin'), usersController.getUserById);
 router.get('/:id/orders', authMiddleware, roleGuard('admin', 'superadmin', 'support_agent'), usersController.getUserOrders);
 router.put('/:id', authMiddleware, roleGuard('admin', 'superadmin'), activityLogger('users', 'update_user'), usersController.updateUser);
+router.put('/:id/reseller-profile', authMiddleware, roleGuard('admin', 'superadmin'), activityLogger('users', 'update_reseller_profile'), usersController.updateResellerProfile);
 router.delete('/:id', authMiddleware, roleGuard('superadmin'), activityLogger('users', 'delete_user'), usersController.deleteUser);
 router.post('/:id/ban', authMiddleware, roleGuard('admin', 'superadmin'), activityLogger('users', 'ban_user'), usersController.banUser);
 router.post('/:id/segment-tags', authMiddleware, roleGuard('admin', 'superadmin'), activityLogger('users', 'update_segment_tags'), usersController.updateSegmentTags);

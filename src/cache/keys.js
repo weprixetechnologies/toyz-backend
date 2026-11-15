@@ -14,7 +14,7 @@ module.exports = {
     settingsPublic: () => `settings:public`
   },
   PREFIXES: {
-    products: 'products:*',
+    products: 'products*',
     categories: 'categories:*',
     offers: 'offers:*',
     settings: 'settings:*'

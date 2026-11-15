@@ -870,7 +870,27 @@ async function initDb() {
       INDEX idx_status (status),
       INDEX idx_source (source),
       INDEX idx_created_at (created_at)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+
+    // 52. policies (Legal policies: Privacy, Refund, Terms, Shipping, etc.)
+    `CREATE TABLE IF NOT EXISTS policies (
+      id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      title           VARCHAR(255) NOT NULL,
+      slug            VARCHAR(191) NOT NULL UNIQUE,
+      type            ENUM('privacy','refund','terms','shipping','cookie','custom') DEFAULT 'custom',
+      content         LONGTEXT NOT NULL,
+      summary         TEXT NULL,
+      effective_date  DATE NULL,
+      is_published    TINYINT(1) DEFAULT 1,
+      meta_title      VARCHAR(255) NULL,
+      meta_description TEXT NULL,
+      version         VARCHAR(30) DEFAULT '1.0',
+      created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_slug (slug),
+      INDEX idx_type (type),
+      INDEX idx_published (is_published)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
   ];
 
   for (const sql of tables) {
