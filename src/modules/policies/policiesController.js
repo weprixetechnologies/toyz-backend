@@ -1,5 +1,22 @@
 const { query } = require('../../config/db');
 
+// Trigger on-demand cache revalidation on the Next.js frontend
+async function triggerFrontendRevalidation(slug) {
+  const secret = process.env.REVALIDATION_SECRET || 'ecom_policy_secret_2026';
+  const frontendUrls = [
+    'http://127.0.0.1:3000',
+    'http://localhost:3000',
+    process.env.FRONTEND_URL
+  ].filter(Boolean);
+
+  for (const baseUrl of frontendUrls) {
+    try {
+      const url = `${baseUrl.replace(/\/$/, '')}/api/revalidate?secret=${secret}&slug=${encodeURIComponent(slug || '')}`;
+      fetch(url, { method: 'POST' }).catch(() => {});
+    } catch (_) {}
+  }
+}
+
 // Slug generator helper
 function generateSlug(str) {
   return str
@@ -187,6 +204,9 @@ exports.createPolicyAdmin = async (req, res, next) => {
       ]
     );
 
+    // Trigger instant on-demand static revalidation on frontend
+    triggerFrontendRevalidation(finalSlug);
+
     res.status(201).json({
       success: true,
       message: 'Policy created successfully',
@@ -262,6 +282,9 @@ exports.updatePolicyAdmin = async (req, res, next) => {
       ]
     );
 
+    // Trigger instant on-demand static revalidation on frontend
+    triggerFrontendRevalidation(finalSlug);
+
     res.json({
       success: true,
       message: 'Policy updated successfully',
@@ -281,10 +304,17 @@ exports.updatePolicyAdmin = async (req, res, next) => {
 exports.deletePolicyAdmin = async (req, res, next) => {
   try {
     const { id } = req.params;
+    const existing = await query(`SELECT slug FROM policies WHERE id = ? LIMIT 1`, [id]);
+    const slug = existing[0]?.slug;
+
     const result = await query(`DELETE FROM policies WHERE id = ?`, [id]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ success: false, message: 'Policy not found' });
+    }
+
+    if (slug) {
+      triggerFrontendRevalidation(slug);
     }
 
     res.json({
