@@ -1,12 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const paymentsController = require('./paymentsController');
-const { authMiddleware } = require('../../middleware/auth');
+const { authMiddleware, optionalAuth } = require('../../middleware/auth');
 const roleGuard = require('../../middleware/roleGuard');
 const activityLogger = require('../../middleware/activityLogger');
 
-// Public Payment endpoints
-router.get('/payments/methods', paymentsController.getPaymentMethods);
+// Public Payment endpoints (with optionalAuth to identify retailers/resellers)
+router.get('/payments/methods', optionalAuth, paymentsController.getPaymentMethods);
 router.post('/payments/webhook/:gateway', paymentsController.handleWebhook);
 
 // Auth Payment endpoints

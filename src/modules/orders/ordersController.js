@@ -7,14 +7,17 @@ const shippingService = require('../shipping/shippingService');
 async function placeOrder(req, res, next) {
   const connection = await pool.getConnection();
   try {
-    // 1. Checkout Gate: Validate at least one payment method (COD or Gateway) is active
+    // 0. Check if approved retailer
+    const isRetailer = await isApprovedRetailer(req.user);
+
+    // 1. Checkout Gate: Validate at least one payment method (COD or Gateway) is active (retailers use Pay In Advance)
     const [codSetting] = await connection.query("SELECT setting_value FROM settings WHERE setting_key = 'cod_enabled'");
     const isCodEnabled = codSetting.length > 0 && codSetting[0]?.setting_value === '1';
 
     const [activeGateways] = await connection.query("SELECT COUNT(*) as count FROM payment_gateways WHERE is_active = 1");
     const isGatewayEnabled = activeGateways.length > 0 && activeGateways[0]?.count > 0;
 
-    if (!isCodEnabled && !isGatewayEnabled) {
+    if (!isRetailer && !isCodEnabled && !isGatewayEnabled) {
       connection.release();
       return res.status(400).json({
         success: false,
@@ -24,13 +27,22 @@ async function placeOrder(req, res, next) {
 
     const { shipping_address_id, shipping_address, billing_gstin, notes, is_buy_now, buy_now_item, coupon_code } = req.body;
     const selectedOfferIds = Array.isArray(req.body.selected_offer_ids) ? req.body.selected_offer_ids : [];
-    const requestedPaymentMethod = req.body.payment_method || 'cod';
+
+    // For retailers, payment method is 'pay_in_advance'
+    const requestedPaymentMethod = isRetailer ? 'pay_in_advance' : (req.body.payment_method || 'cod');
+    const isPayInAdvance = requestedPaymentMethod === 'pay_in_advance';
     const isCod = requestedPaymentMethod === 'cod';
+
+    if (isPayInAdvance && !isRetailer) {
+      connection.release();
+      return res.status(400).json({ success: false, message: 'Pay in Advance is only available for approved resellers.' });
+    }
+
     if (isCod && !isCodEnabled) {
       connection.release();
       return res.status(400).json({ success: false, message: 'Cash on Delivery is not currently available.' });
     }
-    if (!isCod && !(await connection.query('SELECT 1 FROM payment_gateways WHERE key_name = ? AND is_active = 1 LIMIT 1', [requestedPaymentMethod]))[0].length) {
+    if (!isCod && !isPayInAdvance && !(await connection.query('SELECT 1 FROM payment_gateways WHERE key_name = ? AND is_active = 1 LIMIT 1', [requestedPaymentMethod]))[0].length) {
       connection.release();
       return res.status(400).json({ success: false, message: 'Selected payment method is not available.' });
     }
@@ -106,7 +118,6 @@ async function placeOrder(req, res, next) {
     }
 
     // 3. MOQ Check for Retailers
-    const isRetailer = await isApprovedRetailer(req.user);
     if (isRetailer && (coupon_code || selectedOfferIds.length > 0)) {
       connection.release();
       return res.status(403).json({ success: false, message: 'Retailers cannot apply extra offers or coupons.' });
@@ -261,9 +272,9 @@ async function placeOrder(req, res, next) {
       );
     }
 
-    // Clear cart items ONLY IF NOT buy now AND IF COD
+    // Clear cart items ONLY IF NOT buy now AND IF COD OR Pay in Advance
     // For online payments, cart items are kept until payment is successfully initiated / completed
-    if (!is_buy_now && cartId && isCod) {
+    if (!is_buy_now && cartId && (isCod || isPayInAdvance)) {
       await connection.query('DELETE FROM cart_items WHERE cart_id = ?', [cartId]);
     }
 
@@ -391,7 +402,7 @@ async function fetchOrderDetailBundle(orderId, userId = null) {
     : 'SELECT * FROM orders WHERE id = ?';
   const orderParams = userId !== null ? [orderId, userId] : [orderId];
 
-  const [orders, items, shipments, allShipmentItems] = await Promise.all([
+  const [orders, items, shipments, allShipmentItems, payments] = await Promise.all([
     query(orderSql, orderParams),
     query('SELECT * FROM order_items WHERE order_id = ? ORDER BY id ASC', [orderId]),
     query('SELECT * FROM shipments WHERE order_id = ? ORDER BY id ASC', [orderId]),
@@ -401,6 +412,14 @@ async function fetchOrderDetailBundle(orderId, userId = null) {
        INNER JOIN shipments s ON si.shipment_id = s.id
        WHERE s.order_id = ?
        ORDER BY si.id ASC`,
+      [orderId]
+    ),
+    query(
+      `SELECT op.*, u.name as recorded_by_name
+       FROM order_payments op
+       LEFT JOIN users u ON op.recorded_by = u.id
+       WHERE op.order_id = ?
+       ORDER BY op.payment_date ASC, op.id ASC`,
       [orderId]
     )
   ]);
@@ -439,11 +458,22 @@ async function fetchOrderDetailBundle(orderId, userId = null) {
     s.tracking_carrier = s.carrier || s.tracking_carrier || 'Express Logistics';
   }
 
+  const grandTotal = parseFloat(orders[0]?.grand_total || 0);
+  const totalPaid = (payments || []).reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
+  const paymentPending = Math.max(0, grandTotal - totalPaid);
+
   return {
     order: orders[0],
     items,
     shipments,
-    rejected_items: rejectedItems
+    rejected_items: rejectedItems,
+    payments: payments || [],
+    payment_summary: {
+      total_order_value: grandTotal,
+      total_paid: totalPaid,
+      payment_pending: paymentPending,
+      splits_count: (payments || []).length
+    }
   };
 }
 
@@ -790,6 +820,183 @@ async function bulkUpdateOrderStatus(req, res, next) {
   }
 }
 
+async function recordOrderPayment(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { amount, payment_date, admin_remarks, proof_url } = req.body;
+
+    const parsedAmount = parseFloat(amount);
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'A valid positive payment amount is required' });
+    }
+
+    const orderRows = await query('SELECT * FROM orders WHERE id = ?', [id]);
+    if (orderRows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    const order = orderRows[0];
+
+    const payDate = payment_date ? new Date(payment_date).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+
+    const insertRes = await query(
+      `INSERT INTO order_payments (order_id, amount, payment_date, admin_remarks, proof_url, recorded_by)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, parsedAmount, payDate, admin_remarks || null, proof_url || null, req.user?.id || null]
+    );
+
+    // Recalculate total paid
+    const [totals] = await query('SELECT COALESCE(SUM(amount), 0) AS total_paid FROM order_payments WHERE order_id = ?', [id]);
+    const totalPaid = parseFloat(totals[0]?.total_paid || 0);
+    const grandTotal = parseFloat(order.grand_total || 0);
+
+    let newPaymentStatus = order.payment_status;
+    if (totalPaid >= grandTotal && grandTotal > 0) {
+      newPaymentStatus = 'paid';
+      await query('UPDATE orders SET payment_status = "paid", paid_at = COALESCE(paid_at, NOW()) WHERE id = ?', [id]);
+    } else if (totalPaid > 0) {
+      newPaymentStatus = 'partially_paid';
+      await query('UPDATE orders SET payment_status = "partially_paid" WHERE id = ?', [id]);
+    }
+
+    await bumpOrdersVersion();
+
+    res.status(201).json({
+      success: true,
+      message: 'Payment split recorded successfully',
+      data: {
+        payment_id: insertRes.insertId,
+        order_id: parseInt(id, 10),
+        amount: parsedAmount,
+        payment_date: payDate,
+        admin_remarks: admin_remarks || null,
+        proof_url: proof_url || null,
+        payment_status: newPaymentStatus,
+        payment_summary: {
+          total_order_value: grandTotal,
+          total_paid: totalPaid,
+          payment_pending: Math.max(0, grandTotal - totalPaid)
+        }
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function updateOrderPayment(req, res, next) {
+  try {
+    const { id, paymentId } = req.params;
+    const { amount, payment_date, admin_remarks, proof_url } = req.body;
+
+    const parsedAmount = parseFloat(amount);
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'A valid positive payment amount is required' });
+    }
+
+    const orderRows = await query('SELECT * FROM orders WHERE id = ?', [id]);
+    if (orderRows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    const order = orderRows[0];
+
+    const payDate = payment_date ? new Date(payment_date).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+
+    await query(
+      `UPDATE order_payments
+       SET amount = ?, payment_date = ?, admin_remarks = ?, proof_url = ?
+       WHERE id = ? AND order_id = ?`,
+      [parsedAmount, payDate, admin_remarks || null, proof_url || null, paymentId, id]
+    );
+
+    // Recalculate total paid
+    const [totals] = await query('SELECT COALESCE(SUM(amount), 0) AS total_paid FROM order_payments WHERE order_id = ?', [id]);
+    const totalPaid = parseFloat(totals[0]?.total_paid || 0);
+    const grandTotal = parseFloat(order.grand_total || 0);
+
+    let newPaymentStatus = order.payment_status;
+    if (totalPaid >= grandTotal && grandTotal > 0) {
+      newPaymentStatus = 'paid';
+      await query('UPDATE orders SET payment_status = "paid", paid_at = COALESCE(paid_at, NOW()) WHERE id = ?', [id]);
+    } else if (totalPaid > 0) {
+      newPaymentStatus = 'partially_paid';
+      await query('UPDATE orders SET payment_status = "partially_paid" WHERE id = ?', [id]);
+    } else {
+      newPaymentStatus = 'pending';
+      await query('UPDATE orders SET payment_status = "pending" WHERE id = ?', [id]);
+    }
+
+    await bumpOrdersVersion();
+
+    res.json({
+      success: true,
+      message: 'Payment split updated successfully',
+      data: {
+        payment_id: parseInt(paymentId, 10),
+        order_id: parseInt(id, 10),
+        amount: parsedAmount,
+        payment_date: payDate,
+        payment_status: newPaymentStatus,
+        payment_summary: {
+          total_order_value: grandTotal,
+          total_paid: totalPaid,
+          payment_pending: Math.max(0, grandTotal - totalPaid)
+        }
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function deleteOrderPayment(req, res, next) {
+  try {
+    const { id, paymentId } = req.params;
+
+    const orderRows = await query('SELECT * FROM orders WHERE id = ?', [id]);
+    if (orderRows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    const order = orderRows[0];
+
+    await query('DELETE FROM order_payments WHERE id = ? AND order_id = ?', [paymentId, id]);
+
+    // Recalculate total paid
+    const [totals] = await query('SELECT COALESCE(SUM(amount), 0) AS total_paid FROM order_payments WHERE order_id = ?', [id]);
+    const totalPaid = parseFloat(totals[0]?.total_paid || 0);
+    const grandTotal = parseFloat(order.grand_total || 0);
+
+    let newPaymentStatus = order.payment_status;
+    if (totalPaid >= grandTotal && grandTotal > 0) {
+      newPaymentStatus = 'paid';
+      await query('UPDATE orders SET payment_status = "paid", paid_at = COALESCE(paid_at, NOW()) WHERE id = ?', [id]);
+    } else if (totalPaid > 0) {
+      newPaymentStatus = 'partially_paid';
+      await query('UPDATE orders SET payment_status = "partially_paid" WHERE id = ?', [id]);
+    } else {
+      newPaymentStatus = 'pending';
+      await query('UPDATE orders SET payment_status = "pending" WHERE id = ?', [id]);
+    }
+
+    await bumpOrdersVersion();
+
+    res.json({
+      success: true,
+      message: 'Payment split removed',
+      data: {
+        order_id: parseInt(id, 10),
+        payment_status: newPaymentStatus,
+        payment_summary: {
+          total_order_value: grandTotal,
+          total_paid: totalPaid,
+          payment_pending: Math.max(0, grandTotal - totalPaid)
+        }
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   placeOrder,
   listOwnOrders,
@@ -802,5 +1009,8 @@ module.exports = {
   updateOrderShipping,
   downloadInvoice,
   downloadPackingSlip,
-  bulkUpdateOrderStatus
+  bulkUpdateOrderStatus,
+  recordOrderPayment,
+  updateOrderPayment,
+  deleteOrderPayment
 };

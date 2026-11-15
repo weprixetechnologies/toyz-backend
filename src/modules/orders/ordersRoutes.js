@@ -29,4 +29,9 @@ router.put('/admin/orders/:id/payment-status', authMiddleware, roleGuard('admin'
 router.put('/admin/orders/:id/shipping', authMiddleware, roleGuard('admin', 'superadmin', 'inventory_manager'), activityLogger('orders', 'update_order_shipping'), ordersController.updateOrderShipping);
 router.post('/admin/orders/bulk-status', authMiddleware, roleGuard('admin', 'superadmin'), activityLogger('orders', 'bulk_update_status'), ordersController.bulkUpdateOrderStatus);
 
+// Admin Split Payments Tracker
+router.post('/admin/orders/:id/payments', authMiddleware, roleGuard('admin', 'superadmin', 'support_agent'), activityLogger('orders', 'record_split_payment'), ordersController.recordOrderPayment);
+router.put('/admin/orders/:id/payments/:paymentId', authMiddleware, roleGuard('admin', 'superadmin', 'support_agent'), activityLogger('orders', 'update_split_payment'), ordersController.updateOrderPayment);
+router.delete('/admin/orders/:id/payments/:paymentId', authMiddleware, roleGuard('admin', 'superadmin', 'support_agent'), activityLogger('orders', 'delete_split_payment'), ordersController.deleteOrderPayment);
+
 module.exports = router;

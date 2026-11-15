@@ -106,7 +106,8 @@ async function generateInvoicePdf(order, items = [], storeBrand = {}) {
     doc.fillColor('#475569').fontSize(8).font('Helvetica').text(`Date: ${invoiceDate}`, rightBoxX, rightY, { width: rightBoxWidth, align: 'right' });
     rightY += 12;
 
-    const payMethod = (order.payment_method || (order.is_cod ? 'COD' : 'ONLINE')).toUpperCase();
+    const rawPayMethod = (order.payment_method || (order.is_cod ? 'COD' : 'ONLINE')).toUpperCase();
+    const payMethod = rawPayMethod.replace(/_/g, ' ');
     doc.text(`Payment Mode: ${payMethod}`, rightBoxX, rightY, { width: rightBoxWidth, align: 'right' });
     rightY += 12;
 

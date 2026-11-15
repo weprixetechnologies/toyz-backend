@@ -454,6 +454,23 @@ async function initDb() {
       INDEX idx_tx (transaction_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
 
+    // 25b. order_payments (Split payments & offline payment tracker)
+    `CREATE TABLE IF NOT EXISTS order_payments (
+      id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      order_id        INT UNSIGNED NOT NULL,
+      amount          DECIMAL(12,2) NOT NULL,
+      payment_date    DATE NOT NULL,
+      admin_remarks   TEXT NULL,
+      proof_url       VARCHAR(500) NULL,
+      recorded_by     INT UNSIGNED NULL,
+      created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+      FOREIGN KEY (recorded_by) REFERENCES users(id) ON DELETE SET NULL,
+      INDEX idx_order_payments_order (order_id),
+      INDEX idx_order_payments_date (payment_date)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+
     // 26. offers
     `CREATE TABLE IF NOT EXISTS offers (
       id                  INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

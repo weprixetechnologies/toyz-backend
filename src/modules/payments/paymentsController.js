@@ -4,6 +4,24 @@ const { bumpOrdersVersion } = require('../../cache/orderCache');
 
 async function getPaymentMethods(req, res, next) {
   try {
+    const isRetailer = (req.user && req.user.role === 'retailer') || req.query.role === 'retailer';
+    if (isRetailer) {
+      return res.json({
+        success: true,
+        data: {
+          methods: [
+            {
+              key_name: 'pay_in_advance',
+              display_name: 'Pay In Advance',
+              type: 'pay_in_advance',
+              is_active: true,
+              description: 'Place order with no payment yet. Requires approval from the authority. Post approval, the store will contact you for payment outside the website and confirmation before dispatch.'
+            }
+          ]
+        }
+      });
+    }
+
     const codSetting = await db.query("SELECT setting_value FROM settings WHERE setting_key = 'cod_enabled'");
     const isCodEnabled = codSetting.length > 0 && codSetting[0].setting_value === '1';
 
